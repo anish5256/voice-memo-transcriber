@@ -12,7 +12,7 @@ Pipeline
   5. loop/hallucination guards (no per-word find/replace: that only overfits one recording)
 
 Usage
-  python transcribe.py memo.m4a --prompt-file examples/prompt.example.txt
+  python transcribe.py memo.m4a
 """
 import argparse
 import json
@@ -30,7 +30,11 @@ WHISPER = "mlx-community/whisper-large-v3-mlx"
 # Provisional: calibrated on two recordings (true 2 speakers -> 0.143, one speaker split in two -> 0.068).
 SINGLE_SPEAKER_SEPARATION = 0.10
 # Without any Hinglish text in the prompt, Whisper writes English instead of Roman-script Hindi.
-DEFAULT_HINGLISH_PROMPT = "Haan toh ye baat hai, main kal check karke batata hoon, theek hai? Chalo phir dekhte hain."
+DEFAULT_HINGLISH_PROMPT = (
+    "Haan toh main bol raha tha ki kal meeting mein hum plan aur timeline discuss karenge. "
+    "Theek hai, phir main sabko update bhej deta hoon. Aap bataiye, aapka kya khayal hai? "
+    "Nahi nahi, wo ho jayega, bas ek baar check kar lete hain. Okay, chalo phir baad mein baat karte hain."
+)
 SR = 16000
 LOOP = re.compile(r"(\w+(?:\s+\w+){0,3}?)(?:\s+\1){3,}")  # same 1-4 word phrase repeated 4+ times
 

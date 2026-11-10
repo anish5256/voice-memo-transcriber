@@ -22,7 +22,7 @@ bash scripts/download_models.sh        # ~90 MB speaker models -> ./models
 Speakers are detected automatically; there is nothing to label by hand:
 
 ```bash
-python transcribe.py memo.m4a --prompt-file examples/prompt.example.txt
+python transcribe.py memo.m4a
 ```
 
 Outputs go to `out/`: `<name>.English.txt`, `<name>.Hinglish.txt`, `pieces.json`.
@@ -37,7 +37,7 @@ Outputs go to `out/`: `<name>.English.txt`, `<name>.Hinglish.txt`, `pieces.json`
   labelled one speaker. That cutoff is **provisional**: calibrated on two recordings (2 speakers ->
   0.143, one speaker split in two -> 0.068). Pass `--num-speakers 1` or `2` if it guesses wrong.
 - `--labels-only`: detect speakers and write `pieces.json` without transcribing (fast sanity check).
-- `--prompt-file`: optional (a neutral Hinglish default is used; without *any* Hinglish text
+- `--prompt-file`: optional (a generic everyday-Hinglish default is built in; without *any* Hinglish text
   Whisper writes English instead of Roman-script Hindi). A few Hinglish sentences containing your domain vocabulary. Whisper copies
   the style and spells those words correctly. This is deliberately the only vocabulary
   mechanism: hand-written find/replace lists (e.g. "sabri" -> "summary") overfit one recording

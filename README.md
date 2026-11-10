@@ -88,3 +88,13 @@ hardest stretches.
 - Only the first ~50 s were validated against ground truth in the original run.
 - The consolidated `transcribe.py` was assembled from tested experiment scripts; if something
   breaks, check model paths in `--models-dir` first.
+
+## Handing the result to an LLM
+
+When both modes run, `out/<name>.for-llm.md` is also written: clean-up instructions, your glossary,
+and for every segment both the Hinglish and the English transcript. The two fail in different
+places, so an LLM reading both plus context repairs far more than any find/replace list could.
+
+Put your own names and terms in `~/.voice-memo-glossary.txt` (or `--glossary-file`). It is context
+for the LLM, not replacement rules, and it lives outside the repo. The instructions tell the LLM
+to keep the speaker's wording, never invent text, and mark doubtful words `[?]`.

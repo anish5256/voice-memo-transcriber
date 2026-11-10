@@ -27,6 +27,23 @@ import sherpa_onnx
 import mlx_whisper
 
 WHISPER = "mlx-community/whisper-large-v3-mlx"
+DEFAULT_GLOSSARY = Path.home() / ".voice-memo-glossary.txt"   # personal; lives outside the repo
+LLM_INSTRUCTIONS = """# Voice memo transcript: clean-up task
+
+Two independent machine transcripts of the same Hindi/Hinglish voice memo are given for every
+segment. Both contain errors, and usually in different places: the Hinglish one is closer to the
+spoken words but misspells and mishears; the English one is a translation and can smooth over or
+drop things.
+
+Produce a cleaned transcript:
+- Use BOTH versions plus the surrounding segments to work out what was actually said.
+- Fix misheard words, spellings and names using context and the glossary.
+- Keep the speaker's own wording, tone and Hinglish; do not summarise or polish.
+- Never add facts that neither version supports. If a word or phrase is uncertain, keep the closest
+  original wording and mark it [?]. If a segment is unusable, write [unclear].
+- Keep timestamps and speaker labels. Output the cleaned Hinglish first, then a faithful English
+  translation, then a short list of the corrections you were least sure about.
+"""
 # Provisional: calibrated on two recordings (true 2 speakers -> 0.143, one speaker split in two -> 0.068).
 SINGLE_SPEAKER_SEPARATION = 0.10
 # Without any Hinglish text in the prompt, Whisper writes English instead of Roman-script Hindi.
@@ -206,6 +223,8 @@ def main():
     ap.add_argument("--models-dir", default="models", type=Path)
     ap.add_argument("--out-dir", default="out", type=Path)
     ap.add_argument("--modes", default="en,hing", help="comma list of: en, hing")
+    ap.add_argument("--glossary-file", type=Path,
+                    help=f"names/terms for the LLM bundle (default: {DEFAULT_GLOSSARY} if it exists)")
     ap.add_argument("--prompt-file", type=Path, help="text file: Hinglish sentence(s) with your domain terms")
     a = ap.parse_args()
 
@@ -226,17 +245,29 @@ def main():
         return
 
     prompt = a.prompt_file.read_text().strip() if a.prompt_file else None
+    stamp = lambda s: f"[{int(s // 60)}:{s % 60:04.1f}]"
+    results = {}
     for mode in a.modes.split(","):
-        lines = []
+        rows = []  # one entry per piece (empty text kept so the two modes stay aligned)
         for s, b, l in pieces:
             clip = x[max(0, int((s - 0.2) * SR)):int((b + 0.2) * SR)]
-            t = transcribe_piece(clip, mode, prompt)
-            if t:
-                lines.append(f"[{int(s // 60)}:{s % 60:04.1f}] Speaker {l}: {t}")
+            rows.append((s, l, transcribe_piece(clip, mode, prompt)))
+        results[mode] = rows
         name = {"en": "English", "hing": "Hinglish"}[mode]
         out = a.out_dir / f"{audio.stem}.{name}.txt"
-        out.write_text("\n".join(lines), encoding="utf-8")
+        out.write_text("\n".join(f"{stamp(s)} Speaker {l}: {t}" for s, l, t in rows if t), encoding="utf-8")
         print("wrote", out, flush=True)
+
+    if "en" in results and "hing" in results:
+        gpath = a.glossary_file or DEFAULT_GLOSSARY
+        glossary = gpath.read_text(encoding="utf-8").strip() if gpath.exists() else "(none provided)"
+        segs = "\n\n".join(
+            f"{stamp(s)} Speaker {l}\n  Hinglish: {h or '[nothing recognised]'}\n  English:  {e or '[nothing recognised]'}"
+            for (s, l, h), (_, _, e) in zip(results["hing"], results["en"]))
+        bundle = a.out_dir / f"{audio.stem}.for-llm.md"
+        bundle.write_text(LLM_INSTRUCTIONS + "\n## Glossary (context, not replacements)\n" + glossary +
+                          "\n\n## Segments\n\n" + segs + "\n", encoding="utf-8")
+        print("wrote", bundle, flush=True)
 
 
 if __name__ == "__main__":

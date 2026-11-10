@@ -32,9 +32,13 @@ Outputs go to `out/`: `<name>.English.txt`, `<name>.Hinglish.txt`, `pieces.json`
 [0:15.7] Speaker 1: It starts at ten; I'll send everyone the invite...
 ```
 
-- `--num-speakers N`: override the auto-detected count (default: chosen by eigengap, minimum 2).
+- `--num-speakers N`: override the auto-detected count. By default the count comes from the
+  eigengap, and if the clusters aren't clearly different voices (separation < 0.10) everything is
+  labelled one speaker. That cutoff is **provisional**: calibrated on two recordings (2 speakers ->
+  0.143, one speaker split in two -> 0.068). Pass `--num-speakers 1` or `2` if it guesses wrong.
 - `--labels-only`: detect speakers and write `pieces.json` without transcribing (fast sanity check).
-- `--prompt-file`: a few Hinglish sentences containing your domain vocabulary. Whisper copies
+- `--prompt-file`: optional (a neutral Hinglish default is used; without *any* Hinglish text
+  Whisper writes English instead of Roman-script Hindi). A few Hinglish sentences containing your domain vocabulary. Whisper copies
   the style and spells those words correctly. This is deliberately the only vocabulary
   mechanism: hand-written find/replace lists (e.g. "sabri" -> "summary") overfit one recording
   and corrupt real words elsewhere, so there is no post-correction step.

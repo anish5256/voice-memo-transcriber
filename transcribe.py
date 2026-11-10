@@ -27,6 +27,10 @@ import sherpa_onnx
 import mlx_whisper
 
 WHISPER = "mlx-community/whisper-large-v3-mlx"
+# Provisional: calibrated on two recordings (true 2 speakers -> 0.143, one speaker split in two -> 0.068).
+SINGLE_SPEAKER_SEPARATION = 0.10
+# Without any Hinglish text in the prompt, Whisper writes English instead of Roman-script Hindi.
+DEFAULT_HINGLISH_PROMPT = "Haan toh ye baat hai, main kal check karke batata hoon, theek hai? Chalo phir dekhte hain."
 SR = 16000
 LOOP = re.compile(r"(\w+(?:\s+\w+){0,3}?)(?:\s+\1){3,}")  # same 1-4 word phrase repeated 4+ times
 
@@ -103,17 +107,36 @@ def spectral_cluster(sim, k_forced=None, max_k=8):
     return lab, k
 
 
-def label_pieces(x, models, num_speakers=None):
+def window_sim(x, models):
+    """Speech windows and their pairwise voice similarity (mean cosine over two embedding models)."""
     dur = len(x) / SR
     mask = speech_mask(x, models)
     W = [w for w in windows(0, dur) if mask[int(w[0] * 10):int(w[1] * 10)].mean() > 0.6]
     if len(W) < 8:
-        return [(w[0], w[1], 1) for w in W]
+        return W, None
     embs = [Embedder(models / "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"),
             Embedder(models / "nemo_en_titanet_small.onnx")]
     E = [np.array([e(x, *w) for w in W]) for e in embs]
-    sim = np.mean([m @ m.T for m in E], axis=0)
+    return W, np.mean([m @ m.T for m in E], axis=0)
+
+
+def separation(sim, lab):
+    """Mean within-cluster minus mean cross-cluster similarity: ~0 means 'one voice split in two'."""
+    same = lab[:, None] == lab[None, :]
+    off = ~np.eye(len(lab), dtype=bool)
+    return float(sim[same & off].mean() - sim[~same].mean())
+
+
+def label_pieces(x, models, num_speakers=None):
+    W, sim = window_sim(x, models)
+    if sim is None:
+        return [(w[0], w[1], 1) for w in W]
     lab, k = spectral_cluster(sim, num_speakers)
+    if not num_speakers:
+        sep = separation(sim, lab)
+        print(f"cluster separation {sep:.3f} (single-speaker cutoff {SINGLE_SPEAKER_SEPARATION})", flush=True)
+        if sep < SINGLE_SPEAKER_SEPARATION:        # clusters aren't really different voices
+            lab, k = np.zeros(len(lab), dtype=int), 1
     # mode filter over 3 windows (keep own label on ties)
     sm = []
     for i in range(len(lab)):
@@ -142,7 +165,7 @@ def transcribe_piece(clip, mode, prompt):
     base = dict(verbose=None, condition_on_previous_text=False,
                 compression_ratio_threshold=2.4, logprob_threshold=-1.0)
     kw = (dict(language="hi", task="translate") if mode == "en"
-          else dict(language="en", task="transcribe", **({"initial_prompt": prompt} if prompt else {})))
+          else dict(language="en", task="transcribe", initial_prompt=prompt or DEFAULT_HINGLISH_PROMPT))
     for temp in ((0.0, 0.2, 0.4, 0.6), (0.4,), (0.8,)):  # retry looped decodes hotter
         t = mlx_whisper.transcribe(clip, path_or_hf_repo=WHISPER, temperature=temp, **base, **kw)["text"].strip()
         if not loopy(t):

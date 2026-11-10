@@ -126,3 +126,16 @@ then `bash scripts/install_agent.sh [whatsapp-number]` (uses launchd `WatchPaths
 5-minute fallback; log: `~/Library/Logs/voice-memo-worker.log`). Only new files are processed (state in
 `~/.voice-memo-state.json`); a lock keeps it to one file at a time. The Mac must be awake and online.
 Run `venv/bin/python inbox_worker.py` by hand to process the inbox once.
+
+## MeetingNotes (macOS app)
+
+Drop audio files or record from the mic; each recording is transcribed locally, summarised by ChatGPT
+and filed as `~/Meetings/YYYY/MM/YYYY-MM-DD HHMM - <Title>/` (audio, `summary.md`, transcripts,
+`meta.json`) with a line in `~/Meetings/INDEX.md`. Spec: `docs/meeting-app-plan.md`.
+
+- Build: `bash mac-app/build_app.sh` -> `mac-app/build/MeetingNotes.app` (copy to `~/Applications`).
+- Backend CLI (also usable without the app): `venv/bin/python -I summarize.py AUDIO [--backend codex|proxy|fake]`.
+- Summaries: `codex` backend (default) uses your ChatGPT login via `codex exec --ignore-user-config`
+  (no MCP/connector tools); `proxy` uses an OpenAI-compatible endpoint such as CLIProxyAPI
+  (`CLIPROXY_API_KEY` env var). The transcript text leaves the Mac for the summary step only.
+- Tests: `venv/bin/python -m unittest tests/test_summarize.py`.

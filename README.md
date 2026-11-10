@@ -88,15 +88,3 @@ hardest stretches.
 - Only the first ~50 s were validated against ground truth in the original run.
 - The consolidated `transcribe.py` was assembled from tested experiment scripts; if something
   breaks, check model paths in `--models-dir` first.
-
-## Evaluation
-
-`evaluate.py hyp.txt gold.txt [--normalize]` reports WER/CER against a human-corrected reference
-(timestamps and speaker tags ignored). `hinglish_norm.py` merges spelling variants of the same
-word (yeh/ye, woh/wo, hu/hoon...) and never merges different words (mein vs main).
-
-Finding so far: on two runs of the same audio, normalizing spellings changed WER from 59.7 % to
-59.6 %. Only 1.7 % of tokens were respelled, so spelling variants are **not** where the errors are;
-the differences are whole words and English-vs-Hinglish choices. Use `--normalize` for scoring if
-you like, but don't expect it to improve accuracy. A real accuracy number needs a hand-corrected
-gold set (not stored in this repo).

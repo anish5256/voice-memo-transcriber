@@ -9,11 +9,11 @@ Pipeline
   4. cut at every speaker change, transcribe each piece with whisper-large-v3 on the GPU:
        English  = Hindi -> English translation (most robust on accented Hinglish)
        Hinglish = Roman-script transcription steered by a domain prompt (--prompt-file)
-  5. loop/hallucination guards + optional regex corrections (--fixes-file)
+  5. loop/hallucination guards (no per-word find/replace: that only overfits one recording)
 
 Usage
   python transcribe.py memo.m4a --speaker1 1.6-11.9 --speaker1 16.1-30.5 --speaker2 12.8-14.9 \
-      --prompt-file examples/prompt.example.txt --fixes-file examples/fixes.example.json
+      --prompt-file examples/prompt.example.txt
 """
 import argparse
 import json
@@ -123,7 +123,7 @@ def label_pieces(x, models, spk1, spk2):
     return [(float(a), float(b), 1 if l == 1 else 2) for a, b, l in pieces]
 
 
-def transcribe_piece(clip, mode, prompt, fixes):
+def transcribe_piece(clip, mode, prompt):
     base = dict(verbose=None, condition_on_previous_text=False,
                 compression_ratio_threshold=2.4, logprob_threshold=-1.0)
     kw = (dict(language="hi", task="translate") if mode == "en"
@@ -134,9 +134,6 @@ def transcribe_piece(clip, mode, prompt, fixes):
             break
     else:
         return "[unclear - overlapping speech]"
-    if mode != "en":
-        for pat, rep in fixes:
-            t = re.sub(pat, rep, t, flags=re.I)
     # whisper invents long text on sub-1.3 s clips; drop it
     return "" if (len(clip) / SR < 1.3 and len(t.split()) > 6) else t
 
@@ -152,7 +149,6 @@ def main():
     ap.add_argument("--out-dir", default="out", type=Path)
     ap.add_argument("--modes", default="en,hing", help="comma list of: en, hing")
     ap.add_argument("--prompt-file", type=Path, help="text file: Hinglish sentence(s) with your domain terms")
-    ap.add_argument("--fixes-file", type=Path, help='JSON list of [regex, replacement] applied to Hinglish')
     a = ap.parse_args()
 
     audio = Path(a.audio).expanduser().resolve()
@@ -168,12 +164,11 @@ def main():
           f"speaker2 {sum(b - s for s, b, l in pieces if l == 2):.0f}s", flush=True)
 
     prompt = a.prompt_file.read_text().strip() if a.prompt_file else None
-    fixes = json.load(open(a.fixes_file)) if a.fixes_file else []
     for mode in a.modes.split(","):
         lines = []
         for s, b, l in pieces:
             clip = x[max(0, int((s - 0.2) * SR)):int((b + 0.2) * SR)]
-            t = transcribe_piece(clip, mode, prompt, fixes)
+            t = transcribe_piece(clip, mode, prompt)
             if t:
                 lines.append(f"[{int(s // 60)}:{s % 60:04.1f}] Speaker {l}: {t}")
         name = {"en": "English", "hing": "Hinglish"}[mode]

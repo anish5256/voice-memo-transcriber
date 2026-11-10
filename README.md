@@ -25,8 +25,7 @@ You tell it where each speaker is talking, by listening to a few seconds of each
 python transcribe.py memo.m4a \
   --speaker1 1.6-11.9 --speaker1 16.1-30.5 \
   --speaker2 12.8-14.9 \
-  --prompt-file examples/prompt.example.txt \
-  --fixes-file examples/fixes.example.json
+  --prompt-file examples/prompt.example.txt
 ```
 
 Outputs go to `out/`: `<name>.English.txt`, `<name>.Hinglish.txt`, `pieces.json`.
@@ -39,8 +38,9 @@ Outputs go to `out/`: `<name>.English.txt`, `<name>.Hinglish.txt`, `pieces.json`
 - `--speaker1/--speaker2`: confirmed time ranges (repeatable). ~20 s for one speaker and even
   ~2 s for the other worked. More examples = better labels.
 - `--prompt-file`: a few Hinglish sentences containing your domain vocabulary. Whisper copies
-  the style and spells those words correctly.
-- `--fixes-file`: `[regex, replacement]` pairs for words it still mishears (Hinglish only).
+  the style and spells those words correctly. This is deliberately the only vocabulary
+  mechanism: hand-written find/replace lists (e.g. "sabri" -> "summary") overfit one recording
+  and corrupt real words elsewhere, so there is no post-correction step.
 - `--modes en` or `--modes hing` to run just one output.
 
 ## How it works
@@ -53,7 +53,7 @@ Outputs go to `out/`: `<name>.English.txt`, `<name>.Hinglish.txt`, `pieces.json`
 4. Each piece is transcribed separately with `whisper-large-v3` (MLX / Apple GPU):
    English = Hindi→English translation; Hinglish = Roman-script transcription steered by the prompt.
 5. Loop detection retries hotter, then marks `[unclear - overlapping speech]`; invented text on
-   sub-1.3 s clips is dropped.
+   sub-1.3 s clips is dropped. Nothing is rewritten after the fact.
 
 ## What did not work (so you don't repeat it)
 

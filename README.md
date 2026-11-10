@@ -112,3 +112,17 @@ recommended** when a stronger LLM will read the result: on a 49-minute meeting i
 words (221 of 7,374; 315 segments accepted, 17 rejected), fixed easy spelling (me -> mein,
 mai -> main) but made guesses (verb forms, dropped "pe"/"ki") that hide the evidence a stronger
 model could use. Qwen3 8B was worse: it rewrote meanings and claimed fixes it never made.
+
+## Automatic: iPhone voice memo -> transcript
+
+```
+iPhone: Voice Memos -> Share -> Save to Files -> iCloud Drive / VoiceInbox
+Mac:    launchd agent -> inbox_worker.py -> transcribe.py -> clean.py
+        -> iCloud Drive / VoiceOut / <name>_<date> /   (+ optional WhatsApp ping, no transcript text in it)
+```
+
+Setup: `python3 -m venv venv && venv/bin/pip install -r requirements.txt && bash scripts/download_models.sh models`,
+then `bash scripts/install_agent.sh [whatsapp-number]` (uses launchd `WatchPaths` on the inbox plus a
+5-minute fallback; log: `~/Library/Logs/voice-memo-worker.log`). Only new files are processed (state in
+`~/.voice-memo-state.json`); a lock keeps it to one file at a time. The Mac must be awake and online.
+Run `venv/bin/python inbox_worker.py` by hand to process the inbox once.

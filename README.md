@@ -98,3 +98,18 @@ places, so an LLM reading both plus context repairs far more than any find/repla
 Put your own names and terms in `~/.voice-memo-glossary.txt` (or `--glossary-file`). It is context
 for the LLM, not replacement rules, and it lives outside the repo. The instructions tell the LLM
 to keep the speaker's wording, never invent text, and mark doubtful words `[?]`.
+
+## Cleaning with a local LLM (Ollama)
+
+`python clean.py out/<name>.for-llm.md [--model gemma3:12b]` runs two stages and writes
+`<name>.Hinglish.glossary-fixed.txt` and `<name>.Hinglish.cleaned.txt` (raw transcripts untouched):
+
+1. **Exact glossary replacement in code** (`(often heard as "...")` entries). Small local models
+   ignore glossaries, so this is not left to the model.
+2. **Gemma 3 12B spelling/grammar repair in chunks.** A segment is accepted only if its length stays
+   within 0.75x-1.35x of the original; otherwise the original is kept (no summarising or inventing).
+
+Measured: on a 49-minute meeting Gemma changed 3.0 % of words (221 of 7,374); 315 segments accepted, 17
+rejected. It fixes easy spelling/grammar (me -> mein, mai -> main, hoa -> hua) but cannot resolve words
+only a stronger model or a human would know, and a few changes are guesses (verb forms, dropped
+"pe"/"ki"). Treat it as polish, not ground truth.

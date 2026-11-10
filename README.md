@@ -99,17 +99,16 @@ Put your own names and terms in `~/.voice-memo-glossary.txt` (or `--glossary-fil
 for the LLM, not replacement rules, and it lives outside the repo. The instructions tell the LLM
 to keep the speaker's wording, never invent text, and mark doubtful words `[?]`.
 
-## Cleaning with a local LLM (Ollama)
+## Fixing names, then handing off
 
-`python clean.py out/<name>.for-llm.md [--model gemma3:12b]` runs two stages and writes
-`<name>.Hinglish.glossary-fixed.txt` and `<name>.Hinglish.cleaned.txt` (raw transcripts untouched):
+`python clean.py out/<name>.for-llm.md` applies your glossary's `(often heard as "...")` entries as
+exact whole-word replacements to both transcripts and writes `<name>.for-llm.names-fixed.md`:
+the file to give to a stronger LLM (raw Hinglish + English side by side, names already right).
+Raw transcripts are never modified.
 
-1. **Exact glossary replacement in code** (`(often heard as "...")` entries). Small local models
-   ignore glossaries, so this is not left to the model.
-2. **Gemma 3 12B spelling/grammar repair in chunks.** A segment is accepted only if its length stays
-   within 0.75x-1.35x of the original; otherwise the original is kept (no summarising or inventing).
-
-Measured: on a 49-minute meeting Gemma changed 3.0 % of words (221 of 7,374); 315 segments accepted, 17
-rejected. It fixes easy spelling/grammar (me -> mein, mai -> main, hoa -> hua) but cannot resolve words
-only a stronger model or a human would know, and a few changes are guesses (verb forms, dropped
-"pe"/"ki"). Treat it as polish, not ground truth.
+Optional: `--llm gemma3:12b` also runs a local Ollama model over the text in chunks (a segment is
+kept only if its length stays within 0.75x-1.35x of the original). **Off by default, not
+recommended** when a stronger LLM will read the result: on a 49-minute meeting it changed only 3 % of
+words (221 of 7,374; 315 segments accepted, 17 rejected), fixed easy spelling (me -> mein,
+mai -> main) but made guesses (verb forms, dropped "pe"/"ki") that hide the evidence a stronger
+model could use. Qwen3 8B was worse: it rewrote meanings and claimed fixes it never made.

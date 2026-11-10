@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""Clean a `.for-llm.md` bundle in two stages (local LLM via Ollama).
+"""Apply your glossary to a `.for-llm.md` bundle (and optionally clean it with a local LLM).
 
-  1. Exact glossary replacement, in code: every `(often heard as "X")` entry in the bundle's
-     glossary is applied as a whole-word, case-insensitive replacement. Small local models ignore
-     glossaries, so this is not left to the model.
-  2. LLM spelling/grammar repair, in chunks (the transcript is too long for one prompt). A segment
-     is only accepted if its length stays within a safe range of the original: a model that
-     summarises, drops or invents text is rejected and the original is kept.
+  1. Exact glossary replacement, in code (default): every `(often heard as "X")` entry in the
+     bundle's glossary is applied as a whole-word, case-insensitive replacement to BOTH the Hinglish
+     and English text. Writes <name>.for-llm.names-fixed.md, the file to hand to a stronger LLM,
+     plus <name>.Hinglish.glossary-fixed.txt.
+  2. Optional `--llm MODEL` (local, via Ollama): spelling/grammar repair in chunks. Off by default:
+     measured on a 49-minute meeting it changed only 3 % of words, with some guesses, and a stronger
+     LLM reading both transcripts does this job better. A segment is accepted only if its length
+     stays within a safe range of the original; otherwise the original is kept.
 
-  python clean.py out/memo.for-llm.md [--model gemma3:12b]
+  python clean.py out/memo.for-llm.md [--llm gemma3:12b]
 
-Writes next to the bundle: <name>.Hinglish.glossary-fixed.txt (stage 1) and
-<name>.Hinglish.cleaned.txt (stage 1 + 2). The raw transcripts are never modified.
+The raw transcripts are never modified.
 """
 import argparse
 import json
@@ -86,7 +87,7 @@ def parse_output(text):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("bundle", type=Path)
-    ap.add_argument("--model", default="gemma3:12b")
+    ap.add_argument("--llm", metavar="MODEL", help="also run this Ollama model (optional, off by default)")
     ap.add_argument("--ollama-url", default="http://localhost:11434")
     ap.add_argument("--chunk-chars", type=int, default=3000)
     ap.add_argument("--min-ratio", type=float, default=0.75, help="reject output shorter than this x original")
@@ -108,6 +109,13 @@ def main():
     out1 = a.bundle.with_name(f"{stem}.Hinglish.glossary-fixed.txt")
     out1.write_text("\n".join(f"[{s['t']}] Speaker {s['spk']}: {s['g']}" for s in segs), encoding="utf-8")
     print(f"stage 1: {changed} segments changed by the glossary -> {out1.name}", flush=True)
+    head = text.split("## Segments", 1)[0]
+    out_md = a.bundle.with_name(f"{stem}.for-llm.names-fixed.md")
+    out_md.write_text(head + "## Segments\n\n" + "\n\n".join(
+        f"[{s['t']}] Speaker {s['spk']}\n  Hinglish: {s['g']}\n  English:  {s['e']}" for s in segs) + "\n", encoding="utf-8")
+    print(f"bundle with names fixed -> {out_md.name}", flush=True)
+    if not a.llm:
+        return
 
     # stage 2: LLM repair in chunks
     chunks, cur, size = [], [], 0
@@ -126,7 +134,7 @@ def main():
         body = "\n\n".join(f"[{s['t']}] Speaker {s['spk']}\n  Hinglish: {s['g']}\n  English: {s['e']}" for s in ch)
         prompt = HEAD + f"Glossary (already applied):\n{glossary}\n\nNow the real task.\n\n" + body + "\n"
         try:
-            got = parse_output(ask(a.model, prompt, a.ollama_url))
+            got = parse_output(ask(a.llm, prompt, a.ollama_url))
         except Exception as e:   # keep going; those segments keep their stage-1 text
             print(f"  chunk {i}: model call failed ({e}); keeping originals", flush=True)
             got = {}

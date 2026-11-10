@@ -1,0 +1,4 @@
+mlx-whisper
+sherpa-onnx
+soundfile
+numpy

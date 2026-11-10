@@ -131,6 +131,24 @@ def separation(sim, lab):
     return float(sim[same & off].mean() - sim[~same].mean())
 
 
+def split_long(pieces, x, max_len=25.0):
+    """Whisper decodes ~30 s at a time and silently drops text from longer clips (a monologue is
+    one long piece), so cut anything over max_len at the quietest 0.3 s just before the cap."""
+    out = []
+    for a, b, l in pieces:
+        while b - a > max_len:
+            best = None
+            for t in np.arange(a + max_len - 4.0, a + max_len, 0.1):
+                seg = x[int(t * SR):int((t + 0.3) * SR)]
+                e = float(np.sqrt(np.mean(seg ** 2))) if len(seg) else 1e9
+                if best is None or e < best[0]:
+                    best = (e, t + 0.15)
+            out.append((a, best[1], l))
+            a = best[1]
+        out.append((a, b, l))
+    return out
+
+
 def label_pieces(x, models, num_speakers=None):
     W, sim = window_sim(x, models)
     if sim is None:
@@ -162,7 +180,7 @@ def label_pieces(x, models, num_speakers=None):
         r[0] += 0.15 if r[0] > 0 else 0
         r[1] -= 0.15
     print(f"detected {k} speakers", flush=True)
-    return [(float(a), float(b), int(l)) for a, b, l in pieces]
+    return split_long([(float(a), float(b), int(l)) for a, b, l in pieces], x)
 
 
 def transcribe_piece(clip, mode, prompt):

@@ -2,3 +2,4 @@ mlx-whisper
 sherpa-onnx
 soundfile
 numpy
+scipy

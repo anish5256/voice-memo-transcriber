@@ -4,16 +4,15 @@
 Pipeline
   1. ffmpeg  -> 16 kHz mono wav (no denoising / loudness normalisation: both hurt accuracy)
   2. speech mask from the pyannote segmentation model (only used for "is anyone talking")
-  3. speaker labels: 1 s windows (0.5 s hop) scored against two voice profiles built from
-     time ranges YOU confirm by listening (--speaker1 / --speaker2), using two embedding models
+  3. speakers are auto-detected: 1 s windows (0.5 s hop) -> two voice-embedding models ->
+     spectral clustering with the number of speakers chosen by eigengap (override: --num-speakers)
   4. cut at every speaker change, transcribe each piece with whisper-large-v3 on the GPU:
        English  = Hindi -> English translation (most robust on accented Hinglish)
        Hinglish = Roman-script transcription steered by a domain prompt (--prompt-file)
   5. loop/hallucination guards (no per-word find/replace: that only overfits one recording)
 
 Usage
-  python transcribe.py memo.m4a --speaker1 1.6-11.9 --speaker1 16.1-30.5 --speaker2 12.8-14.9 \
-      --prompt-file examples/prompt.example.txt
+  python transcribe.py memo.m4a --prompt-file examples/prompt.example.txt
 """
 import argparse
 import json
@@ -22,6 +21,7 @@ import subprocess
 from pathlib import Path
 
 import numpy as np
+from scipy.cluster.vq import kmeans2
 import soundfile as sf
 import sherpa_onnx
 import mlx_whisper
@@ -29,11 +29,6 @@ import mlx_whisper
 WHISPER = "mlx-community/whisper-large-v3-mlx"
 SR = 16000
 LOOP = re.compile(r"(\w+(?:\s+\w+){0,3}?)(?:\s+\1){3,}")  # same 1-4 word phrase repeated 4+ times
-
-
-def parse_range(s):
-    a, b = s.split("-")
-    return float(a), float(b)
 
 
 def loopy(t):
@@ -82,45 +77,65 @@ def speech_mask(x, models):
     return mask
 
 
-def label_pieces(x, models, spk1, spk2):
+def spectral_cluster(sim, k_forced=None, max_k=8):
+    """Spectral clustering; k from the largest eigengap (Park et al. auto-tuned neighbour count)."""
+    n = len(sim)
+    best = None
+    for f in (0.02, 0.04, 0.06, 0.1, 0.15, 0.2):
+        p = min(max(3, int(f * n)), n - 1)
+        A = np.zeros_like(sim)
+        idx = np.argsort(-sim, axis=1)[:, :p]
+        for i in range(n):
+            A[i, idx[i]] = sim[i, idx[i]]
+        A = np.clip((A + A.T) / 2, 0, None)
+        np.fill_diagonal(A, 0)
+        d = A.sum(1) + 1e-9
+        ev, vec = np.linalg.eigh(np.eye(n) - A / np.sqrt(d[:, None] * d[None, :]))
+        gaps = np.diff(ev[:max_k + 1])
+        r = (p / n) / max(gaps.max(), 1e-9)
+        if best is None or r < best[0]:
+            best = (r, int(np.argmax(gaps)) + 1, vec)
+    _, k, vec = best
+    k = k_forced or max(k, 2)          # a conversation has at least two people
+    U = vec[:, :k]
+    U = U / np.linalg.norm(U, axis=1, keepdims=True)
+    _, lab = kmeans2(U, k, minit="++", seed=0)
+    return lab, k
+
+
+def label_pieces(x, models, num_speakers=None):
     dur = len(x) / SR
     mask = speech_mask(x, models)
     W = [w for w in windows(0, dur) if mask[int(w[0] * 10):int(w[1] * 10)].mean() > 0.6]
-    embs = {
-        "eres2net": Embedder(models / "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"),
-        "titanet": Embedder(models / "nemo_en_titanet_small.onnx"),
-    }
-    seed = lambda ranges, n: [embs[n](x, *w) for r in ranges for w in windows(*r)]
-    S1 = {n: seed(spk1, n) for n in embs}
-    S2 = {n: seed(spk2, n) for n in embs}
-    WE = {n: [embs[n](x, *w) for w in W] for n in embs}
-    c1 = {n: unit(np.mean(S1[n], 0)) for n in embs}
-    c2 = {n: unit(np.mean(S2[n], 0)) for n in embs}
-
-    def margins():  # > 0 means closer to speaker 1
-        return np.mean([[v @ c1[n] - v @ c2[n] for v in WE[n]] for n in embs], axis=0)
-
-    # one bounded refinement: grow ONLY the speaker-2 profile with windows that are clearly
-    # not speaker 1 (self-training both profiles drifted toward the louder voice)
-    m0 = margins()
-    sure = [i for i, m in enumerate(m0)
-            if m < -0.15 and all(WE[n][i] @ c1[n] - WE[n][i] @ c2[n] < 0 for n in embs)]
-    for n in embs:
-        c2[n] = unit(np.mean(S2[n] + [WE[n][i] for i in sure], 0))
-    lab = (margins() > 0).astype(int)  # 1 = speaker 1, 0 = speaker 2
-    lab = np.array([int(round(np.median(lab[max(0, i - 1):i + 2]))) for i in range(len(lab))])
-
+    if len(W) < 8:
+        return [(w[0], w[1], 1) for w in W]
+    embs = [Embedder(models / "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"),
+            Embedder(models / "nemo_en_titanet_small.onnx")]
+    E = [np.array([e(x, *w) for w in W]) for e in embs]
+    sim = np.mean([m @ m.T for m in E], axis=0)
+    lab, k = spectral_cluster(sim, num_speakers)
+    # mode filter over 3 windows (keep own label on ties)
+    sm = []
+    for i in range(len(lab)):
+        c = np.bincount(lab[max(0, i - 1):i + 2], minlength=k)
+        sm.append(lab[i] if c[lab[i]] == c.max() else int(c.argmax()))
+    # number speakers by first appearance
+    order = {}
+    for l in sm:
+        order.setdefault(l, len(order) + 1)
     runs = []
-    for (a, b), l in zip(W, lab):
+    for (a, b), l in zip(W, sm):
+        l = order[l]
         if runs and runs[-1][2] == l and a - runs[-1][1] <= 0.5:
             runs[-1][1] = b
         else:
-            runs.append([a, b, int(l)])
+            runs.append([a, b, l])
     pieces = [r for r in runs if r[1] - r[0] >= 0.9]
     for r in pieces:
         r[0] += 0.15 if r[0] > 0 else 0
         r[1] -= 0.15
-    return [(float(a), float(b), 1 if l == 1 else 2) for a, b, l in pieces]
+    print(f"detected {k} speakers", flush=True)
+    return [(float(a), float(b), int(l)) for a, b, l in pieces]
 
 
 def transcribe_piece(clip, mode, prompt):
@@ -141,10 +156,8 @@ def transcribe_piece(clip, mode, prompt):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("audio")
-    ap.add_argument("--speaker1", action="append", required=True, type=parse_range,
-                    help="START-END seconds you confirmed are speaker 1 (repeatable, ~20 s total is plenty)")
-    ap.add_argument("--speaker2", action="append", required=True, type=parse_range,
-                    help="START-END seconds you confirmed are speaker 2 (repeatable; even 2 s works)")
+    ap.add_argument("--num-speakers", type=int, help="override the auto-detected speaker count")
+    ap.add_argument("--labels-only", action="store_true", help="only detect speakers, skip transcription")
     ap.add_argument("--models-dir", default="models", type=Path)
     ap.add_argument("--out-dir", default="out", type=Path)
     ap.add_argument("--modes", default="en,hing", help="comma list of: en, hing")
@@ -158,10 +171,14 @@ def main():
                    check=True)
     x = sf.read(wav, dtype="float32")[0]
 
-    pieces = label_pieces(x, a.models_dir, a.speaker1, a.speaker2)
+    pieces = label_pieces(x, a.models_dir, a.num_speakers)
     json.dump(pieces, open(a.out_dir / "pieces.json", "w"))
-    print(f"{len(pieces)} pieces | speaker1 {sum(b - s for s, b, l in pieces if l == 1):.0f}s | "
-          f"speaker2 {sum(b - s for s, b, l in pieces if l == 2):.0f}s", flush=True)
+    tot = {}
+    for s, b, l in pieces:
+        tot[l] = tot.get(l, 0) + b - s
+    print(f"{len(pieces)} pieces | " + " | ".join(f"speaker {l} {t:.0f}s" for l, t in sorted(tot.items())), flush=True)
+    if a.labels_only:
+        return
 
     prompt = a.prompt_file.read_text().strip() if a.prompt_file else None
     for mode in a.modes.split(","):

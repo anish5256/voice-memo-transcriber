@@ -31,6 +31,9 @@ struct MeetingNotesApp: App {
                 .frame(minWidth: 820, minHeight: 520)
                 .onAppear { delegate.recorder = recorder }
         }
+        // No title in the toolbar (like Voice Memos): AppKit re-positions toolbar titles without
+        // animating them, so it jumped to the right while the sidebar expanded.
+        .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
             CommandGroup(after: .newItem) {
                 Button("Open Meetings Folder") {

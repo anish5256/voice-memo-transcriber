@@ -16,3 +16,9 @@ __pycache__/
 *.txt.bak
 !requirements.txt
 !examples/*.txt
+
+# build output (never commit)
+.build/
+build/
+dist/
+mac-app/

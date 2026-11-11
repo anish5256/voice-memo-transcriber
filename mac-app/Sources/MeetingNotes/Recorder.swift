@@ -153,6 +153,7 @@ final class Recorder: ObservableObject {
     var requestingPermission: Bool { machine.state == .starting }
     @Published private(set) var elapsed = 0.0
     @Published private(set) var transcript = ""
+    @Published private(set) var linkedEvent: MeetingEventContext?
     @Published var message: String?
     @Published private(set) var levels: [Float] = Array(repeating: 0, count: 12)
     private var ticker: Task<Void, Never>?
@@ -165,11 +166,13 @@ final class Recorder: ObservableObject {
     private var lastTick = Date()
     private var completion: ((URL, JobSettings) -> Void)?
 
-    func start(settings: JobSettings, microphoneID: String, includeSystemAudio: Bool = false,
+    func start(settings: JobSettings, microphoneID: String, includeSystemAudio: Bool = false, event: MeetingEventContext? = nil,
                completion: @escaping (URL, JobSettings) -> Void) async {
         guard machine.apply(.start) else { return }
+        linkedEvent = event
         guard await AVCaptureDevice.requestAccess(for: .audio) else {
             machine.apply(.fail)
+            linkedEvent = nil
             message = "Microphone access was denied. Enable MeetingNotes in System Settings → Privacy & Security → Microphone."
             return
         }
@@ -194,6 +197,9 @@ final class Recorder: ObservableObject {
             }
             try FileManager.default.createDirectory(at: folder.appendingPathComponent("segments"), withIntermediateDirectories: true)
             created = folder
+            if let event {
+                try event.encoded().write(to: folder.appendingPathComponent("event.json"), options: .atomic)
+            }
             let callbackSession = folder
             let capture = CaptureWriter()
             capture.finished = { [weak self] url, issue in
@@ -255,8 +261,17 @@ final class Recorder: ObservableObject {
             writer?.shutdown(); writer = nil; pending = []
             sessionURL = nil; self.settings = nil; self.completion = nil
             machine.apply(.fail)
+            linkedEvent = nil
             if let created, SegmentNaming.segments(in: created).isEmpty { try? FileManager.default.removeItem(at: created) }
             message = error.localizedDescription
+        }
+    }
+    func startLinked(_ event: MeetingEventContext, queue: JobQueue) async {
+        guard !isBusy else { return }
+        let defaults = UserDefaults.standard
+        await start(settings: SettingsView.snapshot(), microphoneID: defaults.string(forKey: "microphoneID") ?? "",
+                    includeSystemAudio: defaults.bool(forKey: "includeSystemAudio"), event: event) { url, settings in
+            queue.enqueue(url, settings: settings, name: event.title, live: true)
         }
     }
     private func appendTranscript(_ text: String, session: URL) {
@@ -309,6 +324,7 @@ final class Recorder: ObservableObject {
         writer.shutdown(); self.writer = nil
         sessionURL = nil; self.settings = nil; completion = nil
         machine.apply(.finish)
+        linkedEvent = nil
         levels = Array(repeating: 0, count: 12)
     }
 }

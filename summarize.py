@@ -44,6 +44,67 @@ def extract_title(summary, fallback):
     return sanitize_title(match[1] if match else '') or sanitize_title(fallback) or 'Untitled meeting'
 
 
+def read_event(path, log):
+    if path is None:
+        return None
+    try:
+        event = json.loads(path.read_text(encoding='utf-8'))
+        if not isinstance(event, dict):
+            raise ValueError('expected an event object')
+        return event
+    except (OSError, ValueError, UnicodeError) as error:
+        log.write(f'Warning: ignoring calendar event {path}: {error}\n')
+        log.flush()
+        return None
+
+
+def event_text(value):
+    """Keep optional calendar fields on one line; ignore unexpected field types."""
+    return ' '.join(value.split()) if isinstance(value, str) else ''
+
+
+def person_name(person):
+    if not isinstance(person, dict):
+        return ''
+    return event_text(person.get('name')) or event_text(person.get('email')).split('@', 1)[0]
+
+
+def event_context(bundle, event):
+    if event is None:
+        return bundle
+    attendees = event.get('attendees')
+    names = [name for person in attendees for name in [person_name(person)] if name] if isinstance(attendees, list) else []
+    # JSON string literals keep arbitrary names from becoming glossary rule syntax.
+    context = ''.join('Calendar attendee (context only): ' + json.dumps(name, ensure_ascii=False).replace('(', r'\u0028').replace(')', r'\u0029') + '\n'
+                      for name in names)
+    if context:
+        match = re.search(r'^## (?!Glossary\b)', bundle, re.M)
+        offset = match.start() if match else len(bundle)
+        bundle = bundle[:offset].rstrip() + '\n' + context + '\n' + bundle[offset:]
+    lines = ['## Meeting']
+    title = event_text(event.get('title'))
+    if title:
+        lines.append('Title: ' + title)
+    times = []
+    for key in ('start', 'end'):
+        value = event_text(event.get(key))
+        if value:
+            try:
+                value = datetime.fromisoformat(value).isoformat(sep=' ', timespec='minutes')
+            except ValueError:
+                pass
+            times.append(key.capitalize() + ': ' + value)
+    if times:
+        lines.append('Local date/time: ' + ' — '.join(times))
+    organizer = person_name(event.get('organizer'))
+    if organizer:
+        lines.append('Organizer: ' + organizer)
+    if names:
+        lines.append('Attendees: ' + ', '.join(names))
+    head, separator, tail = bundle.partition('## Segments')
+    return head.rstrip() + '\n\n' + '\n'.join(lines) + '\n\n' + separator + tail
+
+
 def meeting_folder(meetings, recorded, title):
     parent = meetings / recorded.strftime('%Y/%m')
     parent.mkdir(parents=True, exist_ok=True)
@@ -203,7 +264,7 @@ def correct_bundle(bundle, provider, model, work, log, proxy_url):
     return result, transcript, counts
 
 
-def organize(audio, work, meetings, recorded, summary, speakers, backend, model, log, correct_backend="none", correct_model="", correction=None):
+def organize(audio, work, meetings, recorded, summary, speakers, backend, model, log, correct_backend="none", correct_model="", correction=None, event=None):
     result = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
                              '-of', 'default=noprint_wrappers=1:nokey=1', str(audio)],
                             stdout=subprocess.PIPE, stderr=log, text=True, check=True)
@@ -212,7 +273,8 @@ def organize(audio, work, meetings, recorded, summary, speakers, backend, model,
     duration = float(result.stdout.strip())
     if not math.isfinite(duration) or duration < 0:
         raise ValueError('ffprobe returned an invalid duration')
-    title = extract_title(summary, audio.stem)
+    title = (sanitize_title(event_text(event.get('title'))) or sanitize_title(audio.stem) or 'Untitled meeting'
+             if event is not None else extract_title(summary, audio.stem))
     folder = meeting_folder(meetings, recorded, title)
     try:
         shutil.copy2(audio, folder / ('audio' + audio.suffix))
@@ -229,6 +291,8 @@ def organize(audio, work, meetings, recorded, summary, speakers, backend, model,
                     summary_backend=backend, summary_model=model, correct_backend=correct_backend,
                     correct_model=correct_model, correction=correction or dict(accepted=0, rejected=0, missing=0),
                     created_at=datetime.now().astimezone().isoformat())
+        if event is not None:
+            meta['event'] = event
         (folder / 'meta.json').write_text(json.dumps(meta, ensure_ascii=False, indent=2) + '\n',
                                           encoding='utf-8')
         with (meetings / 'INDEX.md').open('a', encoding='utf-8') as index:
@@ -244,6 +308,7 @@ def parser():
     providers = ['codex', 'claude', 'anthropic', 'proxy', 'fake']
     ap.add_argument('audio', type=Path, nargs='?')
     ap.add_argument('--live-session', type=Path)
+    ap.add_argument('--event-json', type=Path)
     ap.add_argument('--meetings-dir', type=Path, default=Path.home() / 'Meetings')
     ap.add_argument('--summary-backend', '--backend', choices=providers, default='codex')
     ap.add_argument('--summary-model', default='')
@@ -276,6 +341,9 @@ def main():
                     if session else datetime.fromtimestamp(audio.stat().st_mtime).astimezone())
         repo = Path(__file__).resolve().parent
         with (work / 'pipeline.log').open('a', encoding='utf-8') as log:
+            event_path = (args.event_json.expanduser() if args.event_json is not None else
+                          session / 'event.json' if session and (session / 'event.json').exists() else None)
+            event = read_event(event_path, log)
             if session:
                 # -I omits the script directory from sys.path.
                 if str(repo) not in sys.path:
@@ -296,6 +364,9 @@ def main():
             run([sys.executable, '-I', str(repo / 'clean.py'),
                  str(work / f'{audio.stem}.for-llm.md')], work, log)
             bundle = (work / f'{audio.stem}.for-llm.names-fixed.md').read_text(encoding='utf-8')
+            bundle = event_context(bundle, event)
+            if event is not None:  # the saved transcript.for-llm.md should carry the meeting/attendee context too
+                (work / f'{audio.stem}.for-llm.names-fixed.md').write_text(bundle, encoding='utf-8')
             correction = None
             if args.correct_backend != 'none':
                 bundle, transcript, correction = correct_bundle(
@@ -313,7 +384,7 @@ def main():
             emit('organizing')
             folder, title = organize(audio, work, meetings, recorded, summary, speakers,
                                      provider, model or None, log, args.correct_backend,
-                                     correct_model, correction)
+                                     correct_model, correction, event)
         shutil.rmtree(work)
         if session:
             shutil.rmtree(session)

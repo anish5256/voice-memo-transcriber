@@ -176,3 +176,30 @@ Goal: when a recording stops, only the last segment, speaker clustering, correct
   rotated at the same moment as the mic segment; paused together with the mic. Info.plist `NSAudioCaptureUsageDescription`.
 - UI: "Include system audio (calls)" toggle next to the mic picker (persisted). If the tap can't be created/started (permission denied,
   older macOS) show a notice and record mic-only. Tear down tap + aggregate device on stop, on error and on quit.
+
+## Part E: calendar (EventKit, macOS Calendar incl. Google accounts)
+
+### Event context contract
+- The app writes an event JSON (`event.json` in a live session folder, or a temp file passed with `--event-json PATH` for dropped
+  files): {"title", "start", "end" (ISO local tz), "attendees": [{"name", "email"}], "organizer": {"name","email"} | null,
+  "location", "url", "calendar"}. Attendees without a name use the email's local part.
+- summarize.py: `--event-json PATH` (or `<session>/event.json` for --live-session). When present:
+  - correction prompts and the summary input get a short `## Meeting` section (title, date/time, attendees/organizer names) placed
+    before `## Segments`, and the glossary context gains the attendee names (context only, never replacement rules);
+  - the meeting folder title = the event title (sanitised as today; the LLM title is ignored);
+  - meta.json adds "event" with the JSON as given.
+  Without an event everything behaves exactly as today.
+
+### App
+- EventKit: `requestFullAccessToEvents` (macOS 14), Info.plist `NSCalendarsFullAccessUsageDescription`. Settings ▸ Calendar tab:
+  access status + "Connect Calendar", list of calendars with checkboxes (persisted identifiers; default all), "Remind me to record
+  meetings" toggle (default on).
+- Pure `UpcomingMeetingPicker`: from events in the next 12 h and the last 2 h: ignore all-day, cancelled and declined-by-me events
+  and events without other attendees; pick the in-progress one (started <= now < end) else the soonest upcoming. Refresh every
+  60 s and on EKEventStoreChanged.
+- Sidebar top: "Up next" card (title, time range or "Now · ends 3:30 PM", first 3 attendee names + "+N"), Record button that
+  starts recording linked to that event (writes event.json into the session). While recording a linked meeting, the live view
+  shows its title.
+- Local notification at event start (UserNotifications, ask permission on first enable) with a "Record" action that opens the app
+  and starts a linked recording; never auto-records. Re-schedule when events change; no duplicate notifications.
+- Meeting detail shows event title, time and attendees when meta.json has "event".

@@ -146,3 +146,8 @@ while you talk (~18 s of compute per 30 s on an M3 Pro), so after Stop only the 
 clustering, correction and the summary remain. Pick the microphone next to the record button; pause/resume
 any time. Interrupted sessions in `~/Meetings/_live/` are finished automatically on the next launch.
 Tests: `venv/bin/python -m unittest tests/test_live.py tests/test_summarize.py` and `cd mac-app && swift test`.
+
+### Calendar
+MeetingNotes reads macOS Calendar (add Google under System Settings ▸ Internet Accounts). The "Up next" card records
+a meeting linked to its event: the folder is named after the event and attendee names are given to the correction and
+summary models as context. Optional reminders at meeting start never record on their own. Backend: `summarize.py --event-json`.

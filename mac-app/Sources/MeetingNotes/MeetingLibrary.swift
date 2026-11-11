@@ -7,6 +7,7 @@ struct Meeting: Identifiable, Sendable {
     let recordedAt: Date
     let duration: Double
     let speakers: Int
+    var event: MeetingEventContext? = nil
     var id: URL { folder }
     var subtitle: String {
         recordedAt.formatted(.dateTime.day().month(.abbreviated).year()) + " · " +
@@ -54,7 +55,7 @@ final class MeetingLibrary: ObservableObject {
                   let meta = try? JSONDecoder().decode(Metadata.self, from: data),
                   let date = parseDate(meta.recorded_at) else { return nil }
             return Meeting(folder: folder, title: meta.title, recordedAt: date,
-                           duration: meta.duration_s ?? 0, speakers: meta.speakers ?? 0)
+                           duration: meta.duration_s ?? 0, speakers: meta.speakers ?? 0, event: meta.event)
         }.sorted { $0.recordedAt == $1.recordedAt ? $0.id.path > $1.id.path : $0.recordedAt > $1.recordedAt }
     }
 
@@ -63,6 +64,16 @@ final class MeetingLibrary: ObservableObject {
         let recorded_at: String
         let duration_s: Double?
         let speakers: Int?
+        let event: MeetingEventContext?
+        enum CodingKeys: String, CodingKey { case title, recorded_at, duration_s, speakers, event }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            title = try c.decode(String.self, forKey: .title)
+            recorded_at = try c.decode(String.self, forKey: .recorded_at)
+            duration_s = try c.decodeIfPresent(Double.self, forKey: .duration_s)
+            speakers = try c.decodeIfPresent(Int.self, forKey: .speakers)
+            event = try? c.decode(MeetingEventContext.self, forKey: .event)
+        }
     }
 
     nonisolated private static func parseDate(_ value: String) -> Date? {

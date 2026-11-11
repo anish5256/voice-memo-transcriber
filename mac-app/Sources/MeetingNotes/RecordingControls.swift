@@ -68,6 +68,9 @@ struct LiveRecordingView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text(recorder.isPaused ? "Recording paused" : "Live recording").font(.largeTitle).bold()
+            if let event = recorder.linkedEvent {
+                Text(event.title).font(.title2).textSelection(.enabled)
+            }
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading) {

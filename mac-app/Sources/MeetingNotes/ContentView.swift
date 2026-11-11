@@ -7,6 +7,7 @@ struct ContentView: View {
     @ObservedObject var recorder: Recorder
     @ObservedObject var account: ProviderAccount
     @ObservedObject var claudeAccount: ProviderAccount
+    @ObservedObject var calendar: CalendarService
     @StateObject private var library = MeetingLibrary()
     @AppStorage("meetingsPath") private var meetingsPath = "~/Meetings"
     @AppStorage("summaryProvider") private var summaryProvider = "codex"
@@ -24,6 +25,11 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             List(selection: $selection) {
+                if let meeting = calendar.upcoming {
+                    UpcomingMeetingCard(meeting: meeting, busy: recorder.isBusy) {
+                        Task { await recorder.startLinked(meeting.context, queue: queue) }
+                    }
+                }
                 if !processing.isEmpty {
                     Section("Processing") {
                         ForEach(processing) { job in ProcessingRow(job: job) }

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UserNotifications
 
 enum Paths {
     static func url(_ path: String) -> URL {
@@ -14,6 +15,7 @@ struct MeetingNotesApp: App {
     @StateObject private var account: ProviderAccount
     @StateObject private var claudeAccount: ProviderAccount
     @StateObject private var recorder = Recorder()
+    @StateObject private var calendar = CalendarService()
     @AppStorage("meetingsPath") private var meetingsPath = "~/Meetings"
 
     init() {
@@ -28,9 +30,22 @@ struct MeetingNotesApp: App {
     var body: some Scene {
         // One main window (like Voice Memos); Window ▸ MeetingNotes and the Dock icon reopen it.
         Window("MeetingNotes", id: "main") {
-            ContentView(queue: queue, recorder: recorder, account: account, claudeAccount: claudeAccount)
+            ContentView(queue: queue, recorder: recorder, account: account, claudeAccount: claudeAccount, calendar: calendar)
                 .frame(minWidth: 820, minHeight: 520)
-                .onAppear { delegate.recorder = recorder }
+                .onAppear {
+                    delegate.recorder = recorder
+                    delegate.recordMeeting = { id, start in
+                        calendar.refresh()
+                        guard !recorder.isBusy else { return }
+                        guard let event = UpcomingMeetingPicker.eligible(calendar.events, now: Date()).first(where: {
+                            $0.id == id && abs($0.start.timeIntervalSince1970 - start) < 1
+                        }) else {
+                            queue.notice = "This calendar meeting is no longer available to record."
+                            return
+                        }
+                        Task { await recorder.startLinked(event.context, queue: queue) }
+                    }
+                }
                 .background(ReopenBridge { delegate.openMain = $0 })
         }
         // No title in the toolbar (like Voice Memos): AppKit re-positions toolbar titles without
@@ -47,15 +62,51 @@ struct MeetingNotesApp: App {
                 }
             }
         }
-        Settings { SettingsView(account: account, claudeAccount: claudeAccount) }
+        Settings { SettingsView(account: account, claudeAccount: claudeAccount, calendar: calendar) }
     }
 }
 
 // Defer normal Quit until the final file callback and STOP marker have been handled.
 @MainActor
-final class MeetingAppDelegate: NSObject, NSApplicationDelegate {
+final class MeetingAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     weak var recorder: Recorder?
-    var openMain: (() -> Void)?
+    var openMain: (() -> Void)? { didSet { handlePendingNotification() } }
+    var recordMeeting: ((String, Double) -> Void)? { didSet { handlePendingNotification() } }
+    private var pendingRecord: (String, Double)?
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        let record = UNNotificationAction(identifier: "RECORD_MEETING", title: "Record", options: [.foreground])
+        center.setNotificationCategories([UNNotificationCategory(identifier: "MEETING_RECORD", actions: [record],
+                                                                 intentIdentifiers: [], options: [])])
+    }
+    private func handlePendingNotification() {
+        guard let pendingRecord, let openMain, let recordMeeting else { return }
+        self.pendingRecord = nil
+        openMain()
+        NSApp.activate(ignoringOtherApps: true)
+        recordMeeting(pendingRecord.0, pendingRecord.1)
+    }
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
+        let info = response.notification.request.content.userInfo
+        let id = info["eventIdentifier"] as? String
+        let start = info["eventStart"] as? Double
+        let record = response.actionIdentifier == "RECORD_MEETING"
+        Task { @MainActor in
+            self.openMain?()
+            NSApp.activate(ignoringOtherApps: true)
+            if record, let id, let start {
+                self.pendingRecord = (id, start)
+                self.handlePendingNotification()
+            }
+            completionHandler()
+        }
+    }
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound])
+    }
     private var terminating = false
     // Without this, closing the window left a running app that never showed a window again.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

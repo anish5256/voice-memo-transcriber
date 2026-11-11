@@ -16,6 +16,7 @@ struct JobSettings: Sendable {
 struct SettingsView: View {
     @ObservedObject var account: ProviderAccount
     @ObservedObject var claudeAccount: ProviderAccount
+    @ObservedObject var calendar: CalendarService
     @AppStorage("summaryProvider") private var summaryProvider = "codex"
     @AppStorage("summaryModel") private var summaryModel = ""
     @AppStorage("correctProvider") private var correctProvider = "none"
@@ -85,6 +86,9 @@ struct SettingsView: View {
                 }
             }
             .tabItem { Label("General", systemImage: "gearshape") }
+
+            CalendarSettingsView(calendar: calendar)
+                .tabItem { Label("Calendar", systemImage: "calendar") }
 
             Form {
                 Section {

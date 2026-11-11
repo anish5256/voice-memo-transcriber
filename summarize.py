@@ -144,7 +144,7 @@ def claude_command(model):
             '--output-format', 'text']
 
 
-def ask_llm(provider, model, prompt, work, log, proxy_url):
+def ask_llm(provider, model, prompt, work, log, proxy_url, *, timeout=1200):
     model = default_model(provider, model)
     output = work / 'summary.md'
     if provider == 'codex':
@@ -153,11 +153,11 @@ def ask_llm(provider, model, prompt, work, log, proxy_url):
         if model:
             command += ['-m', model]
         run(command + ['-o', str(output), '-'], work, log,
-            input=prompt, text=True, timeout=1200)
+            input=prompt, text=True, timeout=timeout)
         return output.read_text(encoding='utf-8')
     if provider == 'claude':
         result = subprocess.run(claude_command(model), cwd=work,
-                                input=prompt, text=True, timeout=1200,
+                                input=prompt, text=True, timeout=timeout,
                                 stdout=subprocess.PIPE, stderr=log, check=True)
         log.flush()
         return result.stdout
@@ -165,7 +165,8 @@ def ask_llm(provider, model, prompt, work, log, proxy_url):
         import anthropic
 
         try:
-            client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY
+            client = (anthropic.Anthropic() if timeout == 1200 else
+                      anthropic.Anthropic(timeout=timeout, max_retries=0))  # reads ANTHROPIC_API_KEY
             response = client.beta.messages.create(
                 model=model, max_tokens=16000,
                 betas=['server-side-fallback-2026-07-01'], fallbacks='default',
@@ -188,7 +189,7 @@ def ask_llm(provider, model, prompt, work, log, proxy_url):
             data=json.dumps({'model': model, 'temperature': 0.2,
                              'messages': [{'role': 'user', 'content': prompt}]}).encode(),
             headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key})
-        with urllib.request.urlopen(request, timeout=1200) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.load(response)['choices'][0]['message']['content']
     if provider != 'fake':
         raise ValueError(f'Unknown provider: {provider}')
@@ -236,13 +237,14 @@ def correction_chunks(segments, limit=12000):
     return chunks
 
 
-def correct_bundle(bundle, provider, model, work, log, proxy_url):
+def correct_bundle(bundle, provider, model, work, log, proxy_url, cleaned_indices=()):
     segments = list(SEG.finditer(bundle))
-    chunks = correction_chunks(segments)
+    cleaned_indices = set(cleaned_indices)
+    chunks = correction_chunks([m for i, m in enumerate(segments) if i not in cleaned_indices])
     # Keep speaker attribution and other bundle context in every correction chunk.
     context = bundle.split('## Segments', 1)[0]
     counts = dict(accepted=0, rejected=0, missing=0)
-    corrected = {}
+    corrected = {m.start(): m[3] for m in segments}
     for i, chunk in enumerate(chunks, 1):
         emit('correcting', message=f'chunk {i}/{len(chunks)}')
         prompt = CORRECTION_PROMPT + '\n' + context + '\n## Segments\n\n' + '\n\n'.join(m[0] for m in chunk)
@@ -268,7 +270,7 @@ def correct_bundle(bundle, provider, model, work, log, proxy_url):
     return result, transcript, counts
 
 
-def organize(audio, work, meetings, recorded, summary, speakers, backend, model, log, correct_backend="none", correct_model="", correction=None, event=None):
+def organize(audio, work, meetings, recorded, summary, speakers, backend, model, log, correct_backend="none", correct_model="", correction=None, event=None, live_cleanup=None):
     duration = audio_duration(audio)
     title = (sanitize_title(event_text(event.get('title'))) or sanitize_title(audio.stem) or 'Untitled meeting'
              if event is not None else extract_title(summary, audio.stem))
@@ -290,6 +292,8 @@ def organize(audio, work, meetings, recorded, summary, speakers, backend, model,
                     created_at=datetime.now().astimezone().isoformat())
         if event is not None:
             meta['event'] = event
+        if live_cleanup is not None:
+            meta['live_cleanup'] = live_cleanup
         (folder / 'meta.json').write_text(json.dumps(meta, ensure_ascii=False, indent=2) + '\n',
                                           encoding='utf-8')
         with (meetings / 'INDEX.md').open('a', encoding='utf-8') as index:
@@ -368,7 +372,9 @@ def main():
             correction = None
             if args.correct_backend != 'none':
                 bundle, transcript, correction = correct_bundle(
-                    bundle, args.correct_backend, correct_model, work, log, args.proxy_url)
+                    bundle, args.correct_backend, correct_model, work, log, args.proxy_url,
+                    json.loads((work / f'{audio.stem}.live-cleaned.json').read_text())
+                    if (work / f'{audio.stem}.live-cleaned.json').exists() else ())
                 (work / 'transcript.corrected.txt').write_text(transcript, encoding='utf-8')
             emit('summarizing')
             prompt = SUMMARY_PROMPT + f'\nRecording date: {recorded.isoformat()}\n\n' + bundle
@@ -382,7 +388,10 @@ def main():
             emit('organizing')
             folder, title = organize(audio, work, meetings, recorded, summary, speakers,
                                      provider, model or None, log, args.correct_backend,
-                                     correct_model, correction, event)
+                                     correct_model, correction, event,
+                                     json.loads((session / 'cleanup_stats.json').read_text())
+                                     if session and 'live_cleanup' in json.loads((session / 'session.json').read_text())
+                                     and (session / 'cleanup_stats.json').exists() else None)
         shutil.rmtree(work)
         if session:
             shutil.rmtree(session)

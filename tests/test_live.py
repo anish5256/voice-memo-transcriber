@@ -249,20 +249,22 @@ class LiveTests(unittest.TestCase):
                 'sys.modules', {'mlx_whisper': SimpleNamespace(transcribe=decode)}):
             rows = engine.transcribe_segment(Path('unused'))
         self.assertEqual(rows, [dict(start=.2, end=.8, hinglish='haan', english='one two')])
-        self.assertEqual((calls[0]['language'], calls[0]['initial_prompt']), ('hi', 'custom'))
+        self.assertEqual((calls[0]['language'], calls[0]['initial_prompt']), ('en', 'custom'))
         self.assertEqual((calls[1]['language'], calls[1]['task']), ('hi', 'translate'))
         from unittest.mock import Mock
         decoder = Mock(return_value=dict(text='go go go go go go go go', segments=[]))
         with patch.dict('sys.modules', {'mlx_whisper': SimpleNamespace(transcribe=decoder)}):
             result = live.tr.transcribe_result(np.zeros(32000), 'hing', None)
-        self.assertEqual(decoder.call_count, 3)
+        # three hotter retries of the Roman decode, then the same for the Hindi fallback
+        self.assertEqual(decoder.call_count, 6)
         self.assertEqual([c.kwargs['temperature'] for c in decoder.call_args_list],
-                         [(0., .2, .4, .6), (.4,), (.8,)])
+                         [(0., .2, .4, .6), (.4,), (.8,)] * 2)
+        self.assertEqual([c.kwargs['language'] for c in decoder.call_args_list], ['en'] * 3 + ['hi'] * 3)
         self.assertIn('unclear', result['segments'][0]['text'])
 
     def test_live_filters_echo_and_silence_before_rows(self):
         from types import SimpleNamespace
-        engine = live.Engine(prompt=live.tr.DEFAULT_HINGLISH_PROMPT)
+        engine = live.Engine()
         real = dict(start=.5, end=1, text='theek hai')
         def decode(clip, **kw):
             if kw['task'] == 'translate':
@@ -417,6 +419,49 @@ class LiveTests(unittest.TestCase):
         self.assertEqual(meta['recorded_at'], '2026-05-07T12:30:00+05:30')
         self.assertEqual(meta['speakers'], 1)
         self.assertIn('Haan meeting hai', (folder / 'transcript.hinglish.txt').read_text())
+
+    def test_cleanup_watch_stop_finalize_and_meta(self):
+        path = self.segment(1, real=True)
+        meta_path = self.session / 'session.json'
+        meta = json.loads(meta_path.read_text())
+        meta['live_cleanup'] = dict(provider='claude', model='small')
+        meta_path.write_text(json.dumps(meta))
+        (self.session / 'STOP').touch()
+        rows = [dict(start=.1, end=.8, hinglish='Haan meeting hai', english='There is a meeting',
+                     avg_logprob=-1.)]
+        output = io.StringIO()
+        with patch.object(self.engine, 'transcribe_segment', return_value=rows), patch(
+                'summarize.ask_llm', return_value='0|Haan MEETING hai') as ask, contextlib.redirect_stdout(output):
+            self.assertEqual(live.watch(self.session, log=self.log), 0)
+        self.assertEqual(ask.call_args.kwargs, dict(timeout=90.))
+        self.assertEqual([json.loads(line)['event'] for line in output.getvalue().splitlines()],
+                         ['segment', 'segment_cleaned', 'stopped'])
+        self.assertEqual(json.loads(path.with_suffix('.json').read_text())[0]['hing_clean'], 'Haan MEETING hai')
+        self.assertIn('Haan MEETING hai', (self.session / 'live.txt').read_text())
+        work = self.root / 'work'
+        live.finalize(self.session, work, self.log)
+        self.assertIn('Haan MEETING hai', (work / 'recording.Hinglish.txt').read_text())
+        self.assertIn('Hinglish: Haan MEETING hai', (work / 'recording.for-llm.md').read_text())
+        self.assertEqual(json.loads((work / 'recording.live-cleaned.json').read_text()), [0])
+        stats = json.loads((self.session / 'cleanup_stats.json').read_text())
+        output = io.StringIO()
+        with patch('sys.argv', ['summarize.py', '--live-session', str(self.session),
+                                '--meetings-dir', str(self.root / 'Meetings'),
+                                '--summary-backend', 'fake', '--correct-backend', 'fake']), contextlib.redirect_stdout(output):
+            self.assertEqual(summarize.main(), 0, output.getvalue())
+        folder = Path(json.loads(output.getvalue().splitlines()[-1])['folder'])
+        saved = json.loads((folder / 'meta.json').read_text())
+        self.assertEqual(saved['live_cleanup'], stats)
+        self.assertEqual(saved['correction'], dict(accepted=0, rejected=0, missing=0))
+        self.assertIn('Haan MEETING hai', (folder / 'transcript.corrected.txt').read_text())
+
+    def test_cleanup_off_never_calls_llm_or_writes_stats(self):
+        self.segment(1)
+        (self.session / 'STOP').touch()
+        with patch.object(live, 'duration', return_value=2), patch('summarize.ask_llm') as ask, contextlib.redirect_stdout(io.StringIO()):
+            live.watch(self.session, log=self.log)
+        ask.assert_not_called()
+        self.assertFalse((self.session / 'cleanup_stats.json').exists())
 
 
 if __name__ == '__main__':

@@ -100,9 +100,12 @@ def main():
     rules = glossary_rules(glossary)
     print(f"{len(segs)} segments, {len(rules)} glossary rules", flush=True)
 
+    live_path = a.bundle.with_name(a.bundle.name.removesuffix('.for-llm.md') + '.live-cleaned.json')
+    live_cleaned = set(json.loads(live_path.read_text())) if live_path.exists() else set()
+
     # stage 1: exact glossary replacement
-    for s in segs:
-        s["g"] = s["hing"] if s["hing"] == NONE else apply_rules(s["hing"], rules)
+    for i, s in enumerate(segs):
+        s["g"] = s["hing"] if i in live_cleaned or s["hing"] == NONE else apply_rules(s["hing"], rules)
         s["e"] = apply_rules(s["eng"], rules)
     changed = sum(s["g"] != s["hing"] for s in segs)
     stem = a.bundle.name.removesuffix(".for-llm.md")

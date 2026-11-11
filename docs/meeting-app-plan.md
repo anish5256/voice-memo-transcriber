@@ -206,3 +206,25 @@ Goal: when a recording stops, only the last segment, speaker clustering, correct
 - Local notification at event start (UserNotifications, ask permission on first enable) with a "Record" action that opens the app
   and starts a linked recording; never auto-records. Re-schedule when events change; no duplicate notifications.
 - Meeting detail shows event title, time and attendees when meta.json has "event".
+
+## Part F: live cleanup (real-time transcript correction, token-frugal)
+
+Optional, off by default. While recording, a SMALL model corrects only the lines the local model is unsure about.
+
+### Contract
+- `session.json` may contain `"live_cleanup": {"provider": "claude"|"codex"|"anthropic", "model": "<id or empty>"}` (written by
+  the app only when enabled and the provider is usable). Absent = feature off; behaviour exactly as today.
+- Per whisper line the segment json keeps `avg_logprob`, `no_speech_prob`, `compression_ratio` (when Whisper gives them).
+- A line is **flagged** when any holds: avg_logprob < -0.55; compression_ratio > 2.0; the Hinglish line looks English
+  (`looks_english`); it contains a word of <= 3 letters repeated 3+ times. Thresholds are constants in one place.
+- Per segment with flagged lines, ONE call via `summarize.ask_llm(provider, model, …)`, run on a background worker so
+  transcription of the next segment is never blocked (results applied in segment order). Prompt is compact: a short rule
+  block (fix misheard Hindi/Hinglish/English words and names; keep wording; never add facts; reply only `id|text` lines),
+  the glossary NAMES only (no rules, max 40), up to 1 unflagged neighbour line before each flagged line as read-only
+  context, and for each flagged line: `id|hinglish` plus `en: <english hint>`. Never send unflagged lines for correction.
+- Accept a corrected line only if its length is 0.6x-1.6x of the original; store it as `hing_clean` on that line.
+  Watcher prints `{"event":"segment_cleaned","index":n,"text":"<full segment text with cleaned lines>"}`.
+- Stats in `<session>/cleanup_stats.json`: {"segments", "lines_total", "lines_sent", "calls", "chars_sent",
+  "chars_received", "approx_tokens"} (approx_tokens = chars/4); copied into meta.json as "live_cleanup".
+- Finalize uses `hing_clean` when present. The end-of-recording correction step (if enabled) skips lines already cleaned
+  live, so nothing is paid for twice. A failed or slow call never blocks or fails the recording (keep originals, log it).

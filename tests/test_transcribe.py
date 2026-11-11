@@ -19,10 +19,10 @@ class DecodeTests(unittest.TestCase):
     def test_echo_and_real_speech(self):
         echo = dict(start=0, end=.3, text='Aapka CHALO, phir baad mein baat karte hain.')
         real = dict(start=.3, end=1, text='Theek hai, invoice aaj accounts team ko bhej dena.')
-        got = self.decode([echo, real], prompt=tr.DEFAULT_HINGLISH_PROMPT)
+        got = self.decode([echo, real])
         self.assertEqual(got['segments'], [real])
         self.assertEqual(got['text'], real['text'])
-        self.assertEqual(self.decode([echo], prompt=tr.DEFAULT_HINGLISH_PROMPT)['text'], '')
+        self.assertEqual(self.decode([echo])['text'], '')
         self.assertEqual(self.decode([real])['text'], real['text'])
         short = dict(start=0, end=1, text='theek hai')
         self.assertEqual(self.decode([short])['segments'], [short])
@@ -48,11 +48,34 @@ class DecodeTests(unittest.TestCase):
         self.assertEqual(self.decode([default_echo], prompt=custom)['segments'], [default_echo])
 
 
-    def test_hindi_decode_is_romanized_without_default_prompt(self):
-        seg = dict(start=0, end=1, text='यह invoice कल भेज दो')
-        got = self.decode([seg])
-        self.assertEqual(got['text'], 'yah invoice kal bhej do')
-        decoder_kw = {}
+    def fallback(self, primary, hindi, seconds=10):
+        calls = []
+        def decoder(clip, **kw):
+            calls.append(kw)
+            text = hindi if kw['language'] == 'hi' else primary
+            return dict(text=text, segments=[dict(start=0, end=seconds, text=text)] if text else [])
+        with patch.dict('sys.modules', {'mlx_whisper': SimpleNamespace(transcribe=decoder)}):
+            got = tr.transcribe_result(np.zeros(int(seconds * tr.SR)), 'hing', None)
+        return got['text'].strip(), calls
+
+    def test_hindi_fallback_when_roman_decode_is_empty_or_sparse(self):
+        hindi = 'यह invoice कल accounts team को भेज दो'
+        roman = 'yah invoice kal accounts team ko bhej do'
+        # prompt echo only -> filtered to nothing -> Hindi decode, romanized, no prompt
+        text, calls = self.fallback('Aapka chalo phir baad mein baat karte hain.', hindi)
+        self.assertEqual(text, roman)
+        self.assertEqual(calls[-1]['language'], 'hi')
+        self.assertNotIn('initial_prompt', calls[-1])
+        # one short sentence for a 10 s clip -> the fuller Hindi decode wins
+        self.assertEqual(self.fallback('Theek hai.', hindi)[0], roman)
+        # a normal decode is kept and costs no second pass
+        full = 'Theek hai, invoice aaj accounts team ko bhej dena.'
+        text, calls = self.fallback(full, hindi)
+        self.assertEqual((text, len(calls)), (full, 1))
+        # short clips are never treated as sparse; a worse fallback never replaces the original
+        self.assertEqual(self.fallback('Haan.', hindi, seconds=3)[0], 'Haan.')
+        self.assertEqual(self.fallback('Theek hai.', '')[0], 'Theek hai.')
+        self.assertEqual(self.fallback('Theek hai.', 'लुट ' * 30)[0], 'Theek hai.')
 
     def test_file_paths_rejected(self):
         with self.assertRaisesRegex(TypeError, 'numpy array'):

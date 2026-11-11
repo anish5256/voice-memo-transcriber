@@ -3,26 +3,26 @@ import SwiftUI
 struct JobSettings: Sendable {
     let repo: String
     let meetings: String
-    let backend: String
-    let codexModel: String
-    let claudeModel: String
+    let summaryProvider: String
+    let summaryModel: String
+    let correctProvider: String
+    let correctModel: String
     let anthropicKey: String
     let proxyURL: String
-    let proxyModel: String
     let proxyKey: String
 }
 
 struct SettingsView: View {
     @ObservedObject var account: ProviderAccount
     @ObservedObject var claudeAccount: ProviderAccount
-    @AppStorage("claudeModel") private var claudeModel = "claude-opus-5-5"
+    @AppStorage("summaryProvider") private var summaryProvider = "codex"
+    @AppStorage("summaryModel") private var summaryModel = ""
+    @AppStorage("correctProvider") private var correctProvider = "none"
+    @AppStorage("correctModel") private var correctModel = ""
     @AppStorage("anthropicKey") private var anthropicKey = ""
     @AppStorage("repoPath") private var repo = "~/voice-memo-transcriber"
     @AppStorage("meetingsPath") private var meetings = "~/Meetings"
-    @AppStorage("backend") private var backend = "codex"
-    @AppStorage("codexModel") private var codexModel = ""
     @AppStorage("proxyURL") private var proxyURL = "http://127.0.0.1:8317/v1"
-    @AppStorage("proxyModel") private var proxyModel = "gpt-5"
     @AppStorage("proxyKey") private var proxyKey = ""
 
     var body: some View {
@@ -33,26 +33,19 @@ struct SettingsView: View {
             }
             TextField("Repository path", text: $repo)
             TextField("Meetings folder", text: $meetings)
-            Picker("Backend", selection: $backend) {
-                Text("ChatGPT (your account)").tag("codex")
-                Text("Claude (your account)").tag("claude")
-                Text("Claude API key").tag("anthropic")
-                Text("Custom OpenAI-compatible endpoint").tag("proxy")
-                Text("Offline test").tag("fake")
+            Section("Transcript correction") {
+                ProviderModelPicker(provider: $correctProvider, model: $correctModel, correction: true)
             }
-            if backend == "codex" {
-                TextField("ChatGPT model (optional)", text: $codexModel)
+            Section("Summary") {
+                ProviderModelPicker(provider: $summaryProvider, model: $summaryModel, correction: false)
             }
-            if ["claude", "anthropic"].contains(backend) {
-                TextField("Claude model", text: $claudeModel)
-            }
-            if backend == "proxy" || backend == "anthropic" {
+            if uses("proxy") || uses("anthropic") {
                 DisclosureGroup("Advanced") {
-                    if backend == "anthropic" {
+                    if uses("anthropic") {
                         SecureField("Anthropic API key", text: $anthropicKey)
-                    } else {
+                    }
+                    if uses("proxy") {
                         TextField("Endpoint URL", text: $proxyURL)
-                        TextField("Model", text: $proxyModel)
                         SecureField("API key", text: $proxyKey)
                     }
                     Text("The API key is stored in this Mac’s app preferences.")
@@ -65,18 +58,87 @@ struct SettingsView: View {
         .padding(24).frame(width: 540)
     }
 
+    private func uses(_ provider: String) -> Bool {
+        summaryProvider == provider || correctProvider == provider
+    }
+
+    static func migrateSettings() {
+        let d = UserDefaults.standard
+        guard !d.bool(forKey: "providerSettingsMigrated") else { return }
+        if d.object(forKey: "summaryProvider") == nil {
+            let provider = d.string(forKey: "backend") ?? "codex"
+            d.set(provider, forKey: "summaryProvider")
+            let key = provider == "codex" ? "codexModel" :
+                (["claude", "anthropic"].contains(provider) ? "claudeModel" : "proxyModel")
+            let fallback = ["claude", "anthropic"].contains(provider) ? "claude-opus-5-5" :
+                (provider == "proxy" ? "gpt-5" : "")
+            if d.object(forKey: "summaryModel") == nil {
+                d.set(d.string(forKey: key) ?? fallback, forKey: "summaryModel")
+            }
+        }
+        d.set(true, forKey: "providerSettingsMigrated")
+    }
+
     static func snapshot() -> JobSettings {
+        migrateSettings()
         let d = UserDefaults.standard
         return JobSettings(
             repo: d.string(forKey: "repoPath") ?? "~/voice-memo-transcriber",
             meetings: d.string(forKey: "meetingsPath") ?? "~/Meetings",
-            backend: d.string(forKey: "backend") ?? "codex",
-            codexModel: d.string(forKey: "codexModel") ?? "",
-            claudeModel: d.string(forKey: "claudeModel") ?? "claude-opus-5-5",
+            summaryProvider: d.string(forKey: "summaryProvider") ?? "codex",
+            summaryModel: d.string(forKey: "summaryModel") ?? "",
+            correctProvider: d.string(forKey: "correctProvider") ?? "none",
+            correctModel: d.string(forKey: "correctModel") ?? "",
             anthropicKey: d.string(forKey: "anthropicKey") ?? "",
             proxyURL: d.string(forKey: "proxyURL") ?? "http://127.0.0.1:8317/v1",
-            proxyModel: d.string(forKey: "proxyModel") ?? "gpt-5",
             proxyKey: d.string(forKey: "proxyKey") ?? "")
+    }
+}
+
+private struct ProviderModelPicker: View {
+    @Binding var provider: String
+    @Binding var model: String
+    let correction: Bool
+    @State private var custom = false
+
+    private var claude: Bool { ["claude", "anthropic"].contains(provider) }
+    private var models: [String] {
+        claude ? ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-2"] : [""]
+    }
+    private var selection: Binding<String> {
+        Binding(get: { custom || !models.contains(model) ? "custom" : model }, set: {
+            custom = $0 == "custom"
+            if !custom { model = $0 }
+        })
+    }
+
+    var body: some View {
+        Picker("Provider", selection: $provider) {
+            if correction { Text("Off").tag("none") }
+            Text("ChatGPT (your account)").tag("codex")
+            Text("Claude (your account)").tag("claude")
+            Text("Claude API key").tag("anthropic")
+            Text("Custom OpenAI-compatible endpoint").tag("proxy")
+            if !correction { Text("Offline test").tag("fake") }
+        }
+        .onChange(of: provider) { _, value in
+            custom = false
+            model = ["claude", "anthropic"].contains(value) ? "claude-opus-5-5" :
+                (value == "proxy" ? "gpt-5" : "")
+        }
+        if provider == "proxy" {
+            TextField("Model", text: $model)
+        } else if provider != "none" {
+            Picker("Model", selection: selection) {
+                ForEach(models, id: \.self) { value in
+                    Text(value.isEmpty ? (provider == "codex" ? "Default (Codex chooses)" : "Default") : value).tag(value)
+                }
+                Text("Custom…").tag("custom")
+            }
+            if selection.wrappedValue == "custom" {
+                TextField("Custom model", text: $model)
+            }
+        }
     }
 }
 

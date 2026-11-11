@@ -16,6 +16,7 @@ struct MeetingNotesApp: App {
     @AppStorage("meetingsPath") private var meetingsPath = "~/Meetings"
 
     init() {
+        SettingsView.migrateSettings()
         let account = ProviderAccount(provider: .chatGPT)
         let claudeAccount = ProviderAccount(provider: .claude)
         _claudeAccount = StateObject(wrappedValue: claudeAccount)

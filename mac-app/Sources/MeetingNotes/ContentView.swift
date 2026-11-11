@@ -68,7 +68,7 @@ struct ContentView: View {
                         Text(job.title ?? job.name).font(.headline).lineLimit(2)
                         Spacer()
                         if !job.finished && job.stage != "queued" { ProgressView().controlSize(.small) }
-                        Text(job.stage.capitalized).foregroundStyle(.secondary)
+                        Text(job.message.map { "\(job.stage.capitalized) – \($0)" } ?? job.stage.capitalized).foregroundStyle(.secondary)
                     }
                     if let error = job.error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
                     HStack {

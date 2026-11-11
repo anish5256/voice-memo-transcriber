@@ -7,6 +7,7 @@ struct Job: Identifiable, Sendable {
     let name: String
     let settings: JobSettings
     var stage = "queued"
+    var message: String?
     var folder: String?
     var title: String?
     var error: String?
@@ -69,12 +70,13 @@ final class JobQueue: ObservableObject {
         running = true
         update(job.id) { $0.stage = "starting" }
         Task {
+            let providers = [job.settings.summaryProvider, job.settings.correctProvider]
             let error: String?
-            if job.settings.backend == "codex", account.state != .connected {
+            if providers.contains("codex"), account.state != .connected {
                 error = "Connect ChatGPT first (button at the top)"
-            } else if job.settings.backend == "claude", claudeAccount.state != .connected {
+            } else if providers.contains("claude"), claudeAccount.state != .connected {
                 error = "Connect Claude first (button at the top)"
-            } else if job.settings.backend == "anthropic",
+            } else if providers.contains("anthropic"),
                       job.settings.anthropicKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 error = "Add your Anthropic API key in Settings"
             } else { error = nil }
@@ -122,6 +124,7 @@ final class JobQueue: ObservableObject {
     private func receive(_ event: Event, for id: UUID) {
         update(id) {
             $0.stage = event.stage
+            $0.message = event.message
             if let folder = event.folder { $0.folder = folder }
             if let title = event.title { $0.title = title }
             if event.stage == "error" { $0.error = event.message ?? "The pipeline failed." }
@@ -136,20 +139,19 @@ final class JobQueue: ObservableObject {
         let repo = Paths.url(job.settings.repo)
         process.executableURL = repo.appendingPathComponent("venv/bin/python")
         process.currentDirectoryURL = repo
-        var args = ["-I", repo.appendingPathComponent("summarize.py").path, job.file.path,
+        let args = ["-I", repo.appendingPathComponent("summarize.py").path, job.file.path,
                     "--meetings-dir", Paths.url(job.settings.meetings).path,
-                    "--backend", job.settings.backend]
-        if !job.settings.codexModel.isEmpty { args += ["--codex-model", job.settings.codexModel] }
-        args += ["--proxy-url", job.settings.proxyURL, "--proxy-model", job.settings.proxyModel]
-        if ["claude", "anthropic"].contains(job.settings.backend) {
-            args += ["--claude-model", job.settings.claudeModel]
-        }
+                    "--summary-backend", job.settings.summaryProvider,
+                    "--summary-model", job.settings.summaryModel,
+                    "--correct-backend", job.settings.correctProvider,
+                    "--correct-model", job.settings.correctModel,
+                    "--proxy-url", job.settings.proxyURL]
         process.arguments = args
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (environment["PATH"] ?? "")
         environment["CLIPROXY_API_KEY"] = job.settings.proxyKey
         environment.removeValue(forKey: "ANTHROPIC_API_KEY")
-        if job.settings.backend == "anthropic" {
+        if [job.settings.summaryProvider, job.settings.correctProvider].contains("anthropic") {
             environment["ANTHROPIC_API_KEY"] = job.settings.anthropicKey
         }
         process.environment = environment

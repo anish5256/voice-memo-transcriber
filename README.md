@@ -1,7 +1,14 @@
 # voice-memo-transcriber
 
-Transcribes two-person Hindi / Hinglish voice memos on Apple Silicon (MLX, GPU) into
-**English** and **Roman-script Hinglish**, with `Speaker 1` / `Speaker 2` labels.
+**The on-device transcription engine behind [MeetingNotes for Mac](https://github.com/anish5256/meetingnotes-mac)**,
+a local-first alternative to Granola for English and Hinglish.
+
+Turns English / Hindi / Hinglish recordings into **Roman-script Hinglish** and **English** transcripts with speaker
+labels, entirely on Apple Silicon (MLX Whisper large-v3 + on-device speaker detection). Audio never leaves your Mac;
+only transcript text goes to *your own* ChatGPT or Claude account if you ask for correction or a summary.
+
+> Just want the app? **[Download MeetingNotes](https://github.com/anish5256/meetingnotes-mac/releases/latest)**. This
+> engine is already inside it.
 
 Built for accented, code-switched Indian speech recorded on one phone mic, where plain Whisper
 loops ("no no no no…"), invents text, and where blind speaker diarization is unreliable.

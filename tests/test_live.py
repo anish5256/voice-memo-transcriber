@@ -39,11 +39,17 @@ class LiveTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.log = io.StringIO()
+        model_patch = patch("summarize.ensure_speech_model")
+        model_patch.start()
+        self.addCleanup(model_patch.stop)
+        watch_patch = patch("live_transcribe.ensure_speech_model")
+        watch_patch.start()
+        self.addCleanup(watch_patch.stop)
 
     def segment(self, index, done=True, real=False):
         path = self.session / 'segments' / f'seg-{index:05d}.m4a'
         if real:
-            subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i',
+            subprocess.run([live.ffmpeg(), '-v', 'error', '-f', 'lavfi', '-i',
                             'sine=frequency=440:duration=1', '-c:a', 'aac', str(path)],
                            check=True, capture_output=True)
         else:
@@ -58,7 +64,7 @@ class LiveTests(unittest.TestCase):
                                         system_audio=True)))
 
     def tone(self, path, volume):
-        subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i',
+        subprocess.run([live.ffmpeg(), '-v', 'error', '-y', '-f', 'lavfi', '-i',
                         'sine=frequency=440:duration=1:sample_rate=48000',
                         '-af', f'volume={volume}', '-c:a', 'aac', str(path)],
                        check=True, capture_output=True)

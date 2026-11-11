@@ -17,6 +17,7 @@ import numpy as np
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 import transcribe as tr
+from tools import ffmpeg, audio_duration, ensure_speech_model
 
 
 def atomic(path, write):
@@ -45,13 +46,7 @@ def discover(session):
 
 
 def duration(path):
-    result = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-                             '-of', 'default=noprint_wrappers=1:nokey=1', str(path)],
-                            check=True, capture_output=True, text=True)
-    value = float(result.stdout.strip())
-    if not math.isfinite(value) or value <= 0:
-        raise ValueError('Invalid audio duration')
-    return value
+    return audio_duration(path)
 
 
 # Source attribution uses decoded mono samples, with full scale equal to 1.
@@ -65,7 +60,7 @@ def system_enabled(session):
 
 
 def decode_track(path):
-    result = subprocess.run(['ffmpeg', '-v', 'error', '-i', str(path),
+    result = subprocess.run([ffmpeg(), '-v', 'error', '-i', str(path),
                              '-ac', '1', '-ar', str(tr.SR), '-f', 'f32le', '-'],
                             check=True, capture_output=True)
     samples = np.frombuffer(result.stdout, dtype='<f4')
@@ -104,7 +99,7 @@ def prepare_audio(path, enabled, log):
     if not mix.exists():
         tmp = path.with_suffix('.mix.tmp.m4a')
         try:
-            subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', str(path), '-i', str(system),
+            subprocess.run([ffmpeg(), '-v', 'error', '-y', '-i', str(path), '-i', str(system),
                             '-filter_complex', 'amix=inputs=2:duration=longest:normalize=0',
                             '-ac', '1', '-ar', '48000', '-c:a', 'aac', str(tmp)],
                            check=True, capture_output=True)
@@ -191,7 +186,7 @@ class Engine:
         import soundfile as sf
         with tempfile.TemporaryDirectory() as tmp:
             wav = Path(tmp) / 'audio.wav'
-            subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', str(path),
+            subprocess.run([ffmpeg(), '-v', 'error', '-y', '-i', str(path),
                             '-ac', '1', '-ar', str(tr.SR), str(wav)],
                            check=True, capture_output=True)
             yield sf.read(wav, dtype='float32')[0]
@@ -311,6 +306,7 @@ def scan(session, log, emit_events=False, strict=False):
 def watch(session, poll=0.5, log=None):
     session = Path(session)
     with lock(session, '.watch.lock'):
+        ensure_speech_model(lambda: event('downloading_model'))
         while True:
             with lock(session, '.process.lock'):
                 scan(session, log or sys.stderr, True)
@@ -420,7 +416,7 @@ def finalize(session, work, log, wait_seconds=600):
     text_write(listing, ''.join("file '" + str(p.resolve()).replace("'", "'\\''") + "'\n"
                                for p, *_ in segments))
     tmp = session / 'recording.tmp.m4a'
-    result = subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'concat', '-safe', '0',
+    result = subprocess.run([ffmpeg(), '-v', 'error', '-y', '-f', 'concat', '-safe', '0',
                     '-i', str(listing), '-c', 'copy', str(tmp)],
                    check=True, capture_output=True, text=True)
     log.write(result.stderr)

@@ -45,9 +45,6 @@ class CalendarTests(unittest.TestCase):
                 return recording, 1
 
             def child(command, **kwargs):
-                if command[0] == 'ffprobe':
-                    warnings.append(kwargs['stderr'].name)
-                    return subprocess.CompletedProcess(command, 0, stdout='10')
                 work = Path(kwargs['cwd'])
                 if command[2].endswith('transcribe.py'):
                     files(work, 'memo')
@@ -69,7 +66,7 @@ class CalendarTests(unittest.TestCase):
             if correct:
                 argv += ['--correct-backend', 'fake']
             output = io.StringIO()
-            with patch('sys.argv', argv), patch('summarize.subprocess.run', side_effect=child), patch(
+            with patch('sys.argv', argv), patch('summarize.audio_duration', return_value=10), patch('summarize.ensure_speech_model'), patch('summarize.subprocess.run', side_effect=child), patch(
                     'summarize.ask_llm', side_effect=ask), patch.dict(
                     'sys.modules', {'live_transcribe': SimpleNamespace(finalize=finalize)}), contextlib.redirect_stdout(output):
                 self.assertEqual(summarize.main(), 0, output.getvalue())

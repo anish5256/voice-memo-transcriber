@@ -3,7 +3,6 @@
 import argparse
 from datetime import datetime
 import json
-import math
 import os
 from pathlib import Path
 import re
@@ -13,6 +12,11 @@ import sys
 import traceback
 from urllib.parse import quote
 import urllib.request
+
+# Isolated (-I) launches omit the script directory.
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+from tools import audio_duration, ensure_speech_model, MODEL_MESSAGE
 
 # Same segment layout as clean.py; kept local for the isolated (-I) CLI.
 SEG = re.compile(r"^\[(\d+:\d+\.\d)\] Speaker (\d+)\n  Hinglish: (.*)\n  English:  (.*)$", re.M)
@@ -265,14 +269,7 @@ def correct_bundle(bundle, provider, model, work, log, proxy_url):
 
 
 def organize(audio, work, meetings, recorded, summary, speakers, backend, model, log, correct_backend="none", correct_model="", correction=None, event=None):
-    result = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-                             '-of', 'default=noprint_wrappers=1:nokey=1', str(audio)],
-                            stdout=subprocess.PIPE, stderr=log, text=True, check=True)
-    log.write(result.stdout)
-    log.flush()
-    duration = float(result.stdout.strip())
-    if not math.isfinite(duration) or duration < 0:
-        raise ValueError('ffprobe returned an invalid duration')
+    duration = audio_duration(audio)
     title = (sanitize_title(event_text(event.get('title'))) or sanitize_title(audio.stem) or 'Untitled meeting'
              if event is not None else extract_title(summary, audio.stem))
     folder = meeting_folder(meetings, recorded, title)
@@ -344,6 +341,7 @@ def main():
             event_path = (args.event_json.expanduser() if args.event_json is not None else
                           session / 'event.json' if session and (session / 'event.json').exists() else None)
             event = read_event(event_path, log)
+            ensure_speech_model(lambda: emit('downloading_model', message=MODEL_MESSAGE))
             if session:
                 # -I omits the script directory from sys.path.
                 if str(repo) not in sys.path:

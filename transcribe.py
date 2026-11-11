@@ -18,7 +18,13 @@ import argparse
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
+
+# Isolated (-I) launches omit the script directory.
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+from tools import ffmpeg
 
 import numpy as np
 from scipy.cluster.vq import kmeans2
@@ -228,6 +234,9 @@ def filtered_result(result, prompt=None):
 
 def transcribe_result(clip, mode, prompt, *, temperature=None):
     """Decode with the shared settings and loop guard, retaining Whisper timestamps."""
+    # File paths make mlx_whisper invoke a PATH binary; only decoded arrays are allowed.
+    if not isinstance(clip, np.ndarray):
+        raise TypeError("Whisper audio must be a numpy array")
     import mlx_whisper
     base = dict(verbose=None, condition_on_previous_text=False,
                 compression_ratio_threshold=2.4, logprob_threshold=-1.0)
@@ -274,7 +283,7 @@ def main():
     audio = Path(a.audio).expanduser().resolve()
     a.out_dir.mkdir(parents=True, exist_ok=True)
     wav = a.out_dir / "audio16k.wav"
-    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(audio), "-ac", "1", "-ar", str(SR), str(wav)],
+    subprocess.run([ffmpeg(), "-loglevel", "error", "-y", "-i", str(audio), "-ac", "1", "-ar", str(SR), str(wav)],
                    check=True)
     x = sf.read(wav, dtype="float32")[0]
 

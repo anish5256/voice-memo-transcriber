@@ -77,7 +77,7 @@ class SummarizeTests(unittest.TestCase):
                 (work / 'summary.md').write_text('answer')
             for model in ('', 'chosen'):
                 log = io.StringIO()
-                with patch('summarize.subprocess.run', side_effect=child) as run:
+                with patch('summarize.audio_duration', return_value=125), patch('summarize.ensure_speech_model'), patch('summarize.subprocess.run', side_effect=child) as run:
                     self.assertEqual(summarize.ask_llm('codex', model, 'prompt', work, log, ''), 'answer')
                 command = ['codex', 'exec', '--ignore-user-config', '--skip-git-repo-check',
                            '--ephemeral', '-s', 'read-only', '-c', 'approval_policy="never"']
@@ -208,8 +208,6 @@ class SummarizeTests(unittest.TestCase):
 
             def child(command, **kwargs):
                 calls.append(command)
-                if command[0] == 'ffprobe':
-                    return subprocess.CompletedProcess(command, 0, stdout='125.0\n')
                 work = Path(kwargs['cwd'])
                 kwargs['stdout'].write('child output\n')
                 if command[2].endswith('transcribe.py'):
@@ -236,7 +234,7 @@ class SummarizeTests(unittest.TestCase):
             flags = ['--correct-backend', 'fake', '--correct-model', 'repair'] if correct else []
             with patch('summarize.ask_llm', side_effect=ask), patch('sys.argv', [
                     'summarize.py', str(audio), '--meetings-dir', str(meetings),
-                    '--backend', 'fake'] + flags), patch('summarize.subprocess.run', side_effect=child), \
+                    '--backend', 'fake'] + flags), patch('summarize.audio_duration', return_value=125), patch('summarize.ensure_speech_model'), patch('summarize.subprocess.run', side_effect=child), \
                     patch('summarize.urllib.request.urlopen', side_effect=AssertionError('network')), \
                     contextlib.redirect_stdout(output):
                 self.assertEqual(summarize.main(), 0)
@@ -272,7 +270,7 @@ class SummarizeTests(unittest.TestCase):
             self.assertEqual((meetings / 'INDEX.md').read_text(), summarize.index_line(
                 meetings, folder, 'Test meeting', recorded, 125, 2))
             self.assertEqual(list((meetings / '_work').iterdir()), [])
-            self.assertEqual(len(calls), 3)
+            self.assertEqual(len(calls), 2)
 
     def test_failure_keeps_log(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -281,7 +279,7 @@ class SummarizeTests(unittest.TestCase):
             audio.touch()
             output = io.StringIO()
             with patch('sys.argv', ['summarize.py', str(audio), '--meetings-dir', str(root)]), \
-                    patch('summarize.subprocess.run', side_effect=RuntimeError('child failed')), \
+                    patch('summarize.ensure_speech_model'), patch('summarize.subprocess.run', side_effect=RuntimeError('child failed')), \
                     contextlib.redirect_stdout(output):
                 self.assertEqual(summarize.main(), 1)
             event = json.loads(output.getvalue().splitlines()[-1])

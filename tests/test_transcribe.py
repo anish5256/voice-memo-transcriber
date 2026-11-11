@@ -12,6 +12,7 @@ class DecodeTests(unittest.TestCase):
         with patch.dict('sys.modules', {'mlx_whisper': SimpleNamespace(transcribe=decoder)}):
             got = tr.transcribe_result(np.zeros(int(seconds * tr.SR)), mode, prompt)
             piece = tr.transcribe_piece(np.zeros(int(seconds * tr.SR)), mode, prompt)
+        self.assertTrue(all(isinstance(call.args[0], np.ndarray) for call in decoder.call_args_list))
         self.assertEqual(piece, got['text'].strip())
         return got
 
@@ -45,3 +46,8 @@ class DecodeTests(unittest.TestCase):
         self.assertEqual(self.decode([echo])['segments'], [echo])
         default_echo = dict(start=0, end=1, text='chalo phir baad mein')
         self.assertEqual(self.decode([default_echo], prompt=custom)['segments'], [default_echo])
+
+
+    def test_file_paths_rejected(self):
+        with self.assertRaisesRegex(TypeError, 'numpy array'):
+            tr.transcribe_result('recording.wav', 'en', None)

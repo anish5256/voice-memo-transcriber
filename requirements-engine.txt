@@ -1,0 +1,14 @@
+# Install mlx-whisper separately with --no-deps before installing this file.
+# The bundled engine intentionally does not require torch.
+mlx
+numba
+numpy
+scipy
+tiktoken
+tqdm
+more-itertools
+huggingface_hub
+sherpa-onnx
+soundfile
+anthropic
+imageio-ffmpeg

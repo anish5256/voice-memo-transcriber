@@ -158,3 +158,7 @@ Tests: `venv/bin/python -m unittest tests/test_live.py tests/test_summarize.py`.
 MeetingNotes reads macOS Calendar (add Google under System Settings ▸ Internet Accounts). The "Up next" card records
 a meeting linked to its event: the folder is named after the event and attendee names are given to the correction and
 summary models as context. Optional reminders at meeting start never record on their own. Backend: `summarize.py --event-json`.
+
+## License
+
+[MIT](LICENSE). Third-party models and libraries keep their own licenses.

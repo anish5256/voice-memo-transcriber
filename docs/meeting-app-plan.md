@@ -51,7 +51,15 @@ never invent owners or dates, mark unsure names/words with [?].
   reads stdout JSON lines to update UI on the main actor; PATH for the child must include `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`
   (codex, ffmpeg); proxy key passed via env `CLIPROXY_API_KEY`.
 - Settings window (@AppStorage): repo path (default `~/voice-memo-transcriber`), meetings folder (default `~/Meetings`),
-  backend (codex/proxy/fake), codex model (optional), proxy URL, proxy model, proxy API key. Menu item "Open Meetings Folder".
+  backend: “ChatGPT (your account)” (codex, default), “Custom OpenAI-compatible endpoint” (proxy), or “Offline test” (fake).
+  Optional ChatGPT model; proxy URL/model/key live in a collapsed Advanced disclosure, visible only for the custom endpoint.
+- Shared ChatGPT account state in the header and Settings Account section. Connect runs `codex login` off the main actor,
+  with null stdin and a ten-minute timeout; users finish sign-in in their browser. Settings also offers Sign out (`codex logout`).
+  Refresh with `codex login status` at launch and window activation, and after account changes. Resolve Codex from Homebrew,
+  `/usr/local/bin`, or PATH, and include standard executable directories in child PATH. Never display or log account command output.
+  Missing Codex shows an installation hint; checking/connecting show a spinner and connection shows green status.
+- Before starting a codex job, require connected account state; otherwise fail with “Connect ChatGPT first (button at the top)”
+  and preserve the input file.
 
 ## Not in scope
 Live transcription, editing summaries, cloud sync, sandboxing/notarisation, auto-starting CLIProxyAPI.

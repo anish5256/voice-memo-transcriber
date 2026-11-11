@@ -5,10 +5,16 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @ObservedObject var queue: JobQueue
     @ObservedObject var recorder: Recorder
+    @ObservedObject var account: ChatGPTAccount
+    @Environment(\.scenePhase) private var scenePhase
     @State private var targeted = false
 
     var body: some View {
         VStack(spacing: 18) {
+            HStack {
+                AccountStatusView(account: account)
+                Spacer()
+            }.font(.caption)
             VStack(spacing: 10) {
                 Image(systemName: "waveform.badge.plus").font(.largeTitle)
                 Text("Drop meeting audio here").font(.title2)
@@ -79,6 +85,13 @@ struct ContentView: View {
             }
         }
         .padding(20)
+        .task { await account.refresh() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await account.refresh() } }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            Task { await account.refresh() }
+        }
     }
 
     private func chooseFiles() {

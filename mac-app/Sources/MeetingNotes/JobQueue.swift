@@ -28,6 +28,9 @@ final class JobQueue: ObservableObject {
     @Published private(set) var jobs: [Job] = []
     @Published var notice: String?
     private var running = false
+    private let account: ChatGPTAccount
+
+    init(account: ChatGPTAccount) { self.account = account }
 
     func importFiles(_ urls: [URL]) async {
         let settings = SettingsView.snapshot()
@@ -62,6 +65,16 @@ final class JobQueue: ObservableObject {
         running = true
         update(job.id) { $0.stage = "starting" }
         Task {
+            if job.settings.backend == "codex", account.state != .connected {
+                update(job.id) {
+                    $0.error = "Connect ChatGPT first (button at the top)"
+                    $0.stage = "error"
+                    $0.finished = true
+                }
+                running = false
+                runNext()
+                return
+            }
             let result = await Task.detached {
                 await Self.execute(job) { event in
                     await self.receive(event, for: job.id)

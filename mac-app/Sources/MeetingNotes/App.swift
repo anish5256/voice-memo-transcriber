@@ -9,13 +9,20 @@ enum Paths {
 
 @main
 struct MeetingNotesApp: App {
-    @StateObject private var queue = JobQueue()
+    @StateObject private var queue: JobQueue
+    @StateObject private var account: ChatGPTAccount
     @StateObject private var recorder = Recorder()
     @AppStorage("meetingsPath") private var meetingsPath = "~/Meetings"
 
+    init() {
+        let account = ChatGPTAccount()
+        _account = StateObject(wrappedValue: account)
+        _queue = StateObject(wrappedValue: JobQueue(account: account))
+    }
+
     var body: some Scene {
         WindowGroup {
-            ContentView(queue: queue, recorder: recorder)
+            ContentView(queue: queue, recorder: recorder, account: account)
                 .frame(minWidth: 640, minHeight: 480)
         }
         .commands {
@@ -29,6 +36,6 @@ struct MeetingNotesApp: App {
                 }
             }
         }
-        Settings { SettingsView() }
+        Settings { SettingsView(account: account) }
     }
 }

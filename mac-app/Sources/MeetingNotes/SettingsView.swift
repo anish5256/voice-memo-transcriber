@@ -11,6 +11,7 @@ struct JobSettings: Sendable {
 }
 
 struct SettingsView: View {
+    @ObservedObject var account: ChatGPTAccount
     @AppStorage("repoPath") private var repo = "~/voice-memo-transcriber"
     @AppStorage("meetingsPath") private var meetings = "~/Meetings"
     @AppStorage("backend") private var backend = "codex"
@@ -21,16 +22,29 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section("Account") {
+                AccountStatusView(account: account, allowsSignOut: true)
+            }
             TextField("Repository path", text: $repo)
             TextField("Meetings folder", text: $meetings)
             Picker("Backend", selection: $backend) {
-                ForEach(["codex", "proxy", "fake"], id: \.self) { Text($0) }
+                Text("ChatGPT (your account)").tag("codex")
+                Text("Custom OpenAI-compatible endpoint").tag("proxy")
+                Text("Offline test").tag("fake")
             }
-            TextField("Codex model (optional)", text: $codexModel)
-            TextField("Proxy URL", text: $proxyURL)
-            TextField("Proxy model", text: $proxyModel)
-            SecureField("Proxy API key", text: $proxyKey)
-            Text("Settings apply to newly queued jobs. The proxy key is stored in this Mac’s app preferences.")
+            if backend == "codex" {
+                TextField("ChatGPT model (optional)", text: $codexModel)
+            }
+            if backend == "proxy" {
+                DisclosureGroup("Advanced") {
+                    TextField("Endpoint URL", text: $proxyURL)
+                    TextField("Model", text: $proxyModel)
+                    SecureField("API key", text: $proxyKey)
+                    Text("The API key is stored in this Mac’s app preferences.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Text("Settings apply to newly queued jobs.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(24).frame(width: 540)
@@ -46,5 +60,41 @@ struct SettingsView: View {
             proxyURL: d.string(forKey: "proxyURL") ?? "http://127.0.0.1:8317/v1",
             proxyModel: d.string(forKey: "proxyModel") ?? "gpt-5",
             proxyKey: d.string(forKey: "proxyKey") ?? "")
+    }
+}
+
+struct AccountStatusView: View {
+    @ObservedObject var account: ChatGPTAccount
+    var allowsSignOut = false
+
+    var body: some View {
+        HStack {
+            switch account.state {
+            case .checking:
+                ProgressView().controlSize(.small)
+                Text("ChatGPT: Checking…")
+            case .connected:
+                Text("ChatGPT: Connected").foregroundStyle(.green)
+                if allowsSignOut {
+                    Button("Sign out") { Task { await account.disconnect() } }
+                }
+            case .connecting:
+                ProgressView().controlSize(.small)
+                Text("Finish signing in in your browser…")
+            case .codexMissing:
+                Text("Codex is not installed (brew install codex)")
+            case .notConnected:
+                Text("ChatGPT: Not connected")
+                connectButton
+            case .failed(let message):
+                Text("ChatGPT: Not connected")
+                Text(message).foregroundStyle(.red)
+                connectButton
+            }
+        }
+    }
+
+    private var connectButton: some View {
+        Button("Connect ChatGPT") { Task { await account.connect() } }
     }
 }

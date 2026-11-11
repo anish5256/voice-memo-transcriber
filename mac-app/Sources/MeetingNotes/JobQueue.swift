@@ -28,9 +28,13 @@ final class JobQueue: ObservableObject {
     @Published private(set) var jobs: [Job] = []
     @Published var notice: String?
     private var running = false
-    private let account: ChatGPTAccount
+    private let account: ProviderAccount
+    private let claudeAccount: ProviderAccount
 
-    init(account: ChatGPTAccount) { self.account = account }
+    init(account: ProviderAccount, claudeAccount: ProviderAccount) {
+        self.account = account
+        self.claudeAccount = claudeAccount
+    }
 
     func importFiles(_ urls: [URL]) async {
         let settings = SettingsView.snapshot()
@@ -65,9 +69,18 @@ final class JobQueue: ObservableObject {
         running = true
         update(job.id) { $0.stage = "starting" }
         Task {
+            let error: String?
             if job.settings.backend == "codex", account.state != .connected {
+                error = "Connect ChatGPT first (button at the top)"
+            } else if job.settings.backend == "claude", claudeAccount.state != .connected {
+                error = "Connect Claude first (button at the top)"
+            } else if job.settings.backend == "anthropic",
+                      job.settings.anthropicKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                error = "Add your Anthropic API key in Settings"
+            } else { error = nil }
+            if let error {
                 update(job.id) {
-                    $0.error = "Connect ChatGPT first (button at the top)"
+                    $0.error = error
                     $0.stage = "error"
                     $0.finished = true
                 }
@@ -128,10 +141,17 @@ final class JobQueue: ObservableObject {
                     "--backend", job.settings.backend]
         if !job.settings.codexModel.isEmpty { args += ["--codex-model", job.settings.codexModel] }
         args += ["--proxy-url", job.settings.proxyURL, "--proxy-model", job.settings.proxyModel]
+        if ["claude", "anthropic"].contains(job.settings.backend) {
+            args += ["--claude-model", job.settings.claudeModel]
+        }
         process.arguments = args
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (environment["PATH"] ?? "")
         environment["CLIPROXY_API_KEY"] = job.settings.proxyKey
+        environment.removeValue(forKey: "ANTHROPIC_API_KEY")
+        if job.settings.backend == "anthropic" {
+            environment["ANTHROPIC_API_KEY"] = job.settings.anthropicKey
+        }
         process.environment = environment
         let pipe = Pipe()
         process.standardOutput = pipe

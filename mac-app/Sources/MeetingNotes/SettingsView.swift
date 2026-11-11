@@ -5,13 +5,18 @@ struct JobSettings: Sendable {
     let meetings: String
     let backend: String
     let codexModel: String
+    let claudeModel: String
+    let anthropicKey: String
     let proxyURL: String
     let proxyModel: String
     let proxyKey: String
 }
 
 struct SettingsView: View {
-    @ObservedObject var account: ChatGPTAccount
+    @ObservedObject var account: ProviderAccount
+    @ObservedObject var claudeAccount: ProviderAccount
+    @AppStorage("claudeModel") private var claudeModel = "claude-opus-5-5"
+    @AppStorage("anthropicKey") private var anthropicKey = ""
     @AppStorage("repoPath") private var repo = "~/voice-memo-transcriber"
     @AppStorage("meetingsPath") private var meetings = "~/Meetings"
     @AppStorage("backend") private var backend = "codex"
@@ -24,22 +29,32 @@ struct SettingsView: View {
         Form {
             Section("Account") {
                 AccountStatusView(account: account, allowsSignOut: true)
+                AccountStatusView(account: claudeAccount, allowsSignOut: true)
             }
             TextField("Repository path", text: $repo)
             TextField("Meetings folder", text: $meetings)
             Picker("Backend", selection: $backend) {
                 Text("ChatGPT (your account)").tag("codex")
+                Text("Claude (your account)").tag("claude")
+                Text("Claude API key").tag("anthropic")
                 Text("Custom OpenAI-compatible endpoint").tag("proxy")
                 Text("Offline test").tag("fake")
             }
             if backend == "codex" {
                 TextField("ChatGPT model (optional)", text: $codexModel)
             }
-            if backend == "proxy" {
+            if ["claude", "anthropic"].contains(backend) {
+                TextField("Claude model", text: $claudeModel)
+            }
+            if backend == "proxy" || backend == "anthropic" {
                 DisclosureGroup("Advanced") {
-                    TextField("Endpoint URL", text: $proxyURL)
-                    TextField("Model", text: $proxyModel)
-                    SecureField("API key", text: $proxyKey)
+                    if backend == "anthropic" {
+                        SecureField("Anthropic API key", text: $anthropicKey)
+                    } else {
+                        TextField("Endpoint URL", text: $proxyURL)
+                        TextField("Model", text: $proxyModel)
+                        SecureField("API key", text: $proxyKey)
+                    }
                     Text("The API key is stored in this Mac’s app preferences.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -57,6 +72,8 @@ struct SettingsView: View {
             meetings: d.string(forKey: "meetingsPath") ?? "~/Meetings",
             backend: d.string(forKey: "backend") ?? "codex",
             codexModel: d.string(forKey: "codexModel") ?? "",
+            claudeModel: d.string(forKey: "claudeModel") ?? "claude-opus-5-5",
+            anthropicKey: d.string(forKey: "anthropicKey") ?? "",
             proxyURL: d.string(forKey: "proxyURL") ?? "http://127.0.0.1:8317/v1",
             proxyModel: d.string(forKey: "proxyModel") ?? "gpt-5",
             proxyKey: d.string(forKey: "proxyKey") ?? "")
@@ -64,7 +81,7 @@ struct SettingsView: View {
 }
 
 struct AccountStatusView: View {
-    @ObservedObject var account: ChatGPTAccount
+    @ObservedObject var account: ProviderAccount
     var allowsSignOut = false
 
     var body: some View {
@@ -72,22 +89,22 @@ struct AccountStatusView: View {
             switch account.state {
             case .checking:
                 ProgressView().controlSize(.small)
-                Text("ChatGPT: Checking…")
+                Text("\(account.provider.name): Checking…")
             case .connected:
-                Text("ChatGPT: Connected").foregroundStyle(.green)
+                Text("\(account.provider.name): Connected").foregroundStyle(.green)
                 if allowsSignOut {
                     Button("Sign out") { Task { await account.disconnect() } }
                 }
             case .connecting:
                 ProgressView().controlSize(.small)
-                Text("Finish signing in in your browser…")
-            case .codexMissing:
-                Text("Codex is not installed (brew install codex)")
+                Text("\(account.provider.name): Finish signing in in your browser…")
+            case .missing:
+                Text(account.provider.missingMessage)
             case .notConnected:
-                Text("ChatGPT: Not connected")
+                Text("\(account.provider.name): Not connected")
                 connectButton
             case .failed(let message):
-                Text("ChatGPT: Not connected")
+                Text("\(account.provider.name): Not connected")
                 Text(message).foregroundStyle(.red)
                 connectButton
             }
@@ -95,6 +112,6 @@ struct AccountStatusView: View {
     }
 
     private var connectButton: some View {
-        Button("Connect ChatGPT") { Task { await account.connect() } }
+        Button("Connect \(account.provider.name)") { Task { await account.connect() } }
     }
 }

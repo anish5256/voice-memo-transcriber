@@ -3,3 +3,4 @@ sherpa-onnx
 soundfile
 numpy
 scipy
+anthropic

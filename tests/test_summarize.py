@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+from types import SimpleNamespace
+from unittest.mock import Mock
 import unittest
 from unittest.mock import patch
 
@@ -12,6 +14,62 @@ import summarize
 
 
 class SummarizeTests(unittest.TestCase):
+    def test_claude_command(self):
+        self.assertEqual(summarize.claude_command('chosen-model'), [
+            'claude', '-p', '--setting-sources', 'local', '--tools', '',
+            '--strict-mcp-config', '--no-session-persistence', '--model', 'chosen-model',
+            '--output-format', 'text'])
+
+    def test_claude_backend(self):
+        args = SimpleNamespace(backend='claude', claude_model='chosen-model')
+        log = io.StringIO()
+        with patch('summarize.subprocess.run', return_value=subprocess.CompletedProcess(
+                [], 0, stdout='# Claude summary')) as run:
+            self.assertEqual(summarize.summarize(args, Path('/work'), 'prompt', None, log),
+                             '# Claude summary')
+        run.assert_called_once_with(summarize.claude_command('chosen-model'),
+                                    cwd=Path('/work'), input='prompt', text=True,
+                                    timeout=1200, stdout=subprocess.PIPE, stderr=log, check=True)
+        with patch('summarize.subprocess.run', side_effect=subprocess.CalledProcessError(1, 'claude')):
+            with self.assertRaises(subprocess.CalledProcessError):
+                summarize.summarize(args, Path('/work'), 'prompt', None, log)
+
+    def test_anthropic_backend(self):
+        class APIStatusError(Exception):
+            pass
+
+        class AuthenticationError(APIStatusError):
+            pass
+
+        class APIConnectionError(Exception):
+            pass
+
+        create = Mock(return_value=SimpleNamespace(stop_reason='end_turn', content=[
+            SimpleNamespace(type='text', text='# Claude'), SimpleNamespace(type='other'),
+            SimpleNamespace(type='text', text=' summary')]))
+        factory = Mock(return_value=SimpleNamespace(beta=SimpleNamespace(
+            messages=SimpleNamespace(create=create))))
+        module = SimpleNamespace(Anthropic=factory, AuthenticationError=AuthenticationError,
+                                 APIStatusError=APIStatusError, APIConnectionError=APIConnectionError)
+        args = SimpleNamespace(backend='anthropic', claude_model='chosen-model')
+        with patch.dict('sys.modules', {'anthropic': module}):
+            self.assertEqual(summarize.summarize(args, Path('/work'), 'prompt', None, io.StringIO()),
+                             '# Claude summary')
+            factory.assert_called_once_with()
+            create.assert_called_once_with(
+                model='chosen-model', max_tokens=16000,
+                betas=['server-side-fallback-2026-07-01'], fallbacks='default',
+                messages=[{'role': 'user', 'content': 'prompt'}])
+            create.return_value = SimpleNamespace(stop_reason='refusal')
+            with self.assertRaisesRegex(ValueError, 'Claude declined to summarise this recording'):
+                summarize.summarize(args, Path('/work'), 'prompt', None, io.StringIO())
+            for error, message in [(AuthenticationError, 'Anthropic API key is invalid'),
+                                   (APIStatusError, 'Anthropic API request failed'),
+                                   (APIConnectionError, 'Could not connect to Anthropic API')]:
+                create.side_effect = error('secret-key')
+                with self.subTest(error=error), self.assertRaisesRegex(ValueError, '^' + message + '$'):
+                    summarize.summarize(args, Path('/work'), 'prompt', None, io.StringIO())
+
     def test_titles(self):
         self.assertEqual(summarize.extract_title('\n# .. Sales / Plan: Q?  ###\ntext', 'fallback'),
                          'Sales Plan Q')

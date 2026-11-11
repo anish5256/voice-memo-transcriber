@@ -69,6 +69,12 @@ def run(command, work, log, **kwargs):
     log.flush()
 
 
+def claude_command(model):
+    return ['claude', '-p', '--setting-sources', 'local', '--tools', '',
+            '--strict-mcp-config', '--no-session-persistence', '--model', model,
+            '--output-format', 'text']
+
+
 def summarize(args, work, prompt, recorded, log):
     output = work / 'summary.md'
     if args.backend == 'codex':
@@ -79,6 +85,31 @@ def summarize(args, work, prompt, recorded, log):
         run(command + ['-o', str(output), '-'], work, log,
             input=prompt, text=True, timeout=1200)
         return output.read_text(encoding='utf-8')
+    if args.backend == 'claude':
+        result = subprocess.run(claude_command(args.claude_model), cwd=work,
+                                input=prompt, text=True, timeout=1200,
+                                stdout=subprocess.PIPE, stderr=log, check=True)
+        log.flush()
+        return result.stdout
+    if args.backend == 'anthropic':
+        import anthropic
+
+        try:
+            client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY
+            response = client.beta.messages.create(
+                model=args.claude_model, max_tokens=16000,
+                betas=['server-side-fallback-2026-07-01'], fallbacks='default',
+                messages=[{'role': 'user', 'content': prompt}],
+            )
+        except anthropic.AuthenticationError:
+            raise ValueError('Anthropic API key is invalid') from None
+        except anthropic.APIStatusError:
+            raise ValueError('Anthropic API request failed') from None
+        except anthropic.APIConnectionError:
+            raise ValueError('Could not connect to Anthropic API') from None
+        if response.stop_reason == 'refusal':
+            raise ValueError('Claude declined to summarise this recording')
+        return ''.join(b.text for b in response.content if b.type == 'text')
     if args.backend == 'proxy':
         key = os.environ.get('CLIPROXY_API_KEY')
         if not key:
@@ -131,8 +162,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('audio', type=Path)
     ap.add_argument('--meetings-dir', type=Path, default=Path.home() / 'Meetings')
-    ap.add_argument('--backend', choices=['codex', 'proxy', 'fake'], default='codex')
+    ap.add_argument('--backend', choices=['codex', 'claude', 'anthropic', 'proxy', 'fake'], default='codex')
     ap.add_argument('--codex-model')
+    ap.add_argument('--claude-model', default='claude-opus-5-5')
     ap.add_argument('--proxy-url', default='http://127.0.0.1:8317/v1')
     ap.add_argument('--proxy-model', default='gpt-5')
     args = ap.parse_args()
@@ -169,7 +201,8 @@ def main():
             (work / 'summary.md').write_text(summary, encoding='utf-8')
             emit('organizing')
             model = args.codex_model if args.backend == 'codex' else (
-                args.proxy_model if args.backend == 'proxy' else None)
+                args.claude_model if args.backend in ('claude', 'anthropic') else (
+                    args.proxy_model if args.backend == 'proxy' else None))
             folder, title = organize(audio, work, meetings, recorded, summary, speakers,
                                      args.backend, model, log)
         shutil.rmtree(work)

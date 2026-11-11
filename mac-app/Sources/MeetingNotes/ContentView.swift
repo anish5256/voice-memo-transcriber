@@ -5,14 +5,18 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @ObservedObject var queue: JobQueue
     @ObservedObject var recorder: Recorder
-    @ObservedObject var account: ChatGPTAccount
+    @ObservedObject var account: ProviderAccount
+    @ObservedObject var claudeAccount: ProviderAccount
     @Environment(\.scenePhase) private var scenePhase
     @State private var targeted = false
 
     var body: some View {
         VStack(spacing: 18) {
             HStack {
-                AccountStatusView(account: account)
+                VStack(alignment: .leading, spacing: 4) {
+                    AccountStatusView(account: account)
+                    AccountStatusView(account: claudeAccount)
+                }
                 Spacer()
             }.font(.caption)
             VStack(spacing: 10) {
@@ -85,13 +89,19 @@ struct ContentView: View {
             }
         }
         .padding(20)
-        .task { await account.refresh() }
+        .task { await refreshAccounts() }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { Task { await account.refresh() } }
+            if phase == .active { Task { await refreshAccounts() } }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
-            Task { await account.refresh() }
+            Task { await refreshAccounts() }
         }
+    }
+
+    private func refreshAccounts() async {
+        async let chatGPT: Void = account.refresh()
+        async let claude: Void = claudeAccount.refresh()
+        _ = await (chatGPT, claude)
     }
 
     private func chooseFiles() {

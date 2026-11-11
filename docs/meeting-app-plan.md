@@ -1,15 +1,16 @@
 # MeetingNotes: tiny macOS app (plan / spec)
 
-Drop audio files or record from the Mac mic -> local transcription (existing pipeline) -> ChatGPT
+Drop audio files or record from the Mac mic -> local transcription (existing pipeline) -> ChatGPT or Claude
 summary -> one organized folder per meeting. Two parts with a fixed contract so they can be built
 independently.
 
-## Part A: `summarize.py` (repo root, Python, stdlib only)
+## Part A: `summarize.py` (repo root, Python, Anthropic SDK only for the API backend)
 
 ```
 venv/bin/python -I summarize.py AUDIO
     [--meetings-dir ~/Meetings]
-    [--backend codex|proxy|fake]            default codex
+    [--backend codex|claude|anthropic|proxy|fake]            default codex
+    [--claude-model MODEL]                  default claude-opus-5-5
     [--codex-model MODEL]                   optional, passed as -m
     [--proxy-url http://127.0.0.1:8317/v1]  OpenAI-compatible (CLIProxyAPI)
     [--proxy-model gpt-5]
@@ -22,6 +23,10 @@ Steps (stdout is ONLY JSON lines, one per event; child process output goes to `<
 2. `{"stage":"cleaning"}`: run `sys.executable -I clean.py <work>/<stem>.for-llm.md` -> `<stem>.for-llm.names-fixed.md`.
 3. `{"stage":"summarizing"}`: prompt = SUMMARY_PROMPT + recording date + names-fixed bundle text. Backends:
    - `codex`: `codex exec --ignore-user-config --skip-git-repo-check --ephemeral -s read-only -c approval_policy="never" [-m MODEL] -o <work>/summary.md -` with the prompt on stdin, cwd=`<work>`, timeout 20 min.
+   - `claude`: `claude -p --setting-sources local --tools "" --strict-mcp-config --no-session-persistence --model MODEL --output-format text`,
+     prompt on stdin, cwd=`<work>`, timeout 20 min; stdout is the summary, stderr goes to pipeline.log.
+   - `anthropic`: lazy-import Anthropic SDK; key from `ANTHROPIC_API_KEY` only, never argv. Beta messages API with
+     max_tokens=16000, server-side fallback beta and default fallbacks. Both Claude backends record `--claude-model` in meta.json.
    - `proxy`: POST `{proxy-url}/chat/completions` (urllib), `Authorization: Bearer $CLIPROXY_API_KEY`, temperature 0.2.
    - `fake`: canned markdown (for tests and UI work), no network.
    The summary must start with `# <Title>`; the title names the folder (fallback: audio file stem).
@@ -49,17 +54,23 @@ never invent owners or dates, mark unsure names/words with [?].
 - Dropped files are first COPIED by the app into `<meetings-dir>/_inbox/` (the app holds the user's file access), then processed.
 - Jobs run one at a time. Runner: `Process` with `<repo>/venv/bin/python -I <repo>/summarize.py <file> --meetings-dir … --backend …`,
   reads stdout JSON lines to update UI on the main actor; PATH for the child must include `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`
-  (codex, ffmpeg); proxy key passed via env `CLIPROXY_API_KEY`.
+  (codex, claude, ffmpeg); proxy key passed via env `CLIPROXY_API_KEY`; Anthropic key via `ANTHROPIC_API_KEY` only for anthropic.
+  Pass `--claude-model` for claude/anthropic.
 - Settings window (@AppStorage): repo path (default `~/voice-memo-transcriber`), meetings folder (default `~/Meetings`),
-  backend: “ChatGPT (your account)” (codex, default), “Custom OpenAI-compatible endpoint” (proxy), or “Offline test” (fake).
+  backend: “ChatGPT (your account)” (codex, default), “Claude (your account)” (claude), “Claude API key” (anthropic), “Custom OpenAI-compatible endpoint” (proxy), or “Offline test” (fake).
+  Claude model defaults to claude-opus-5-5 for both Claude backends; Anthropic SecureField is in Advanced for anthropic only.
   Optional ChatGPT model; proxy URL/model/key live in a collapsed Advanced disclosure, visible only for the custom endpoint.
+- Separate ChatGPT and Claude account rows in the header and Settings Account section, each with its own spinner/messages.
+  Claude uses `claude auth status` (exit 0 and JSON `loggedIn: true`), `claude auth login --claudeai`, and `claude auth logout`.
+  Missing Claude shows “Claude Code is not installed”. Refresh both on launch and activation with the same output safety and timeout rules.
 - Shared ChatGPT account state in the header and Settings Account section. Connect runs `codex login` off the main actor,
   with null stdin and a ten-minute timeout; users finish sign-in in their browser. Settings also offers Sign out (`codex logout`).
   Refresh with `codex login status` at launch and window activation, and after account changes. Resolve Codex from Homebrew,
   `/usr/local/bin`, or PATH, and include standard executable directories in child PATH. Never display or log account command output.
   Missing Codex shows an installation hint; checking/connecting show a spinner and connection shows green status.
 - Before starting a codex job, require connected account state; otherwise fail with “Connect ChatGPT first (button at the top)”
-  and preserve the input file.
+  and preserve the input file. Claude jobs require “Connect Claude first (button at the top)”; anthropic jobs with an empty key
+  fail with “Add your Anthropic API key in Settings”.
 
 ## Not in scope
 Live transcription, editing summaries, cloud sync, sandboxing/notarisation, auto-starting CLIProxyAPI.

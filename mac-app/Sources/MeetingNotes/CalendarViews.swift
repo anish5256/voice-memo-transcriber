@@ -34,6 +34,35 @@ struct CalendarSettingsView: View {
     }
 }
 
+/// Shown in the sidebar whenever there is no upcoming meeting, so connecting is always one click away.
+struct CalendarStatusCard: View {
+    @ObservedObject var calendar: CalendarService
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Up next", systemImage: "calendar").font(.caption).foregroundStyle(.secondary)
+            if calendar.hasAccess {
+                if calendar.calendars.isEmpty {
+                    Text("No calendars on this Mac yet.").font(.callout)
+                    Text("Add your Google account (turn on Calendars) to see its meetings here.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Add Google Account…", action: CalendarService.openInternetAccounts).controlSize(.small)
+                } else {
+                    Text("No meetings in the next 12 hours.").font(.callout).foregroundStyle(.secondary)
+                    Text("Only events with other attendees are shown.").font(.caption).foregroundStyle(.tertiary)
+                }
+            } else if calendar.blocked {
+                Text("Calendar access is off.").font(.callout)
+                Button("Open Privacy Settings", action: CalendarService.openPrivacy).controlSize(.small)
+            } else {
+                Text("See your upcoming meetings and record them in one click.").font(.callout)
+                Button("Connect Calendar") { Task { await calendar.connect() } }
+                    .buttonStyle(.borderedProminent).controlSize(.small)
+            }
+            if let message = calendar.message { Text(message).font(.caption).foregroundStyle(.secondary) }
+        }.padding(.vertical, 8)
+    }
+}
+
 struct UpcomingMeetingCard: View {
     let meeting: CalendarMeeting
     let busy: Bool

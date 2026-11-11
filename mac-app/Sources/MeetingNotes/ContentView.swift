@@ -29,6 +29,8 @@ struct ContentView: View {
                     UpcomingMeetingCard(meeting: meeting, busy: recorder.isBusy) {
                         Task { await recorder.startLinked(meeting.context, queue: queue) }
                     }
+                } else {
+                    CalendarStatusCard(calendar: calendar)
                 }
                 if !processing.isEmpty {
                     Section("Processing") {

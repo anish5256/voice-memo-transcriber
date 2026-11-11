@@ -59,6 +59,12 @@ final class CalendarService: ObservableObject {
         UserDefaults.standard.set(enabled, forKey: "calendarReminders")
         refresh()
     }
+    /// Google calendars reach macOS Calendar through Internet Accounts.
+    static func openInternetAccounts() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.Internet-Accounts-Settings.extension") {
+            NSWorkspace.shared.open(url)
+        }
+    }
     static func openPrivacy() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars") {
             NSWorkspace.shared.open(url)

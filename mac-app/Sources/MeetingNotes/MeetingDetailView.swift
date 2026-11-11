@@ -37,7 +37,7 @@ struct MeetingDetailView: View {
                 Picker("Content", selection: $tab) {
                     Text("Summary").tag("Summary")
                     Text("Transcript").tag("Transcript")
-                }.pickerStyle(.segmented).frame(maxWidth: 260)
+                }.labelsHidden().pickerStyle(.segmented).frame(maxWidth: 260)
                 Spacer()
                 if tab == "Transcript" {
                     Toggle("Show English", isOn: $english).toggleStyle(.checkbox)

@@ -24,6 +24,7 @@ struct SettingsView: View {
     @AppStorage("repoPath") private var repo = "~/voice-memo-transcriber"
     @AppStorage("meetingsPath") private var meetings = "~/Meetings"
     @AppStorage("proxyURL") private var proxyURL = "http://127.0.0.1:8317/v1"
+    @AppStorage("playbackOutputID") private var playbackOutputID = ""
     @AppStorage("proxyKey") private var proxyKey = ""
 
     var body: some View {
@@ -68,6 +69,12 @@ struct SettingsView: View {
                     Text("Storage")
                 } footer: {
                     Text("Recordings and processed meetings are saved here.")
+                }
+                Section {
+                    Picker("Playback output", selection: $playbackOutputID) {
+                        Text("System Default").tag("")
+                        ForEach(AudioDevices.outputs) { device in Text(device.name).tag(device.id) }
+                    }
                 }
                 Section {
                     TextField("Repository path", text: $repo)

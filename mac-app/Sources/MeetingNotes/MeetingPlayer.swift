@@ -8,7 +8,8 @@ final class MeetingPlayer: ObservableObject {
     @Published private(set) var duration = 0.0
     @Published var position = 0.0
     @Published private(set) var error: String?
-    private var audio: AVAudioPlayer?
+    private var audio: AVPlayer?
+    private var loading: Task<Void, Never>?
     private var ticker: Task<Void, Never>?
 
     func load(_ folder: URL) {
@@ -17,6 +18,7 @@ final class MeetingPlayer: ObservableObject {
         position = 0
         duration = 0
         audio = nil
+        loading?.cancel()
         do {
             let files = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
             guard let url = files.sorted(by: { $0.path < $1.path }).first(where: {
@@ -25,10 +27,20 @@ final class MeetingPlayer: ObservableObject {
                 error = "Audio is unavailable."
                 return
             }
-            let player = try AVAudioPlayer(contentsOf: url)
-            player.prepareToPlay()
+            let player = AVPlayer(url: url)
             audio = player
-            duration = player.duration
+            setOutput(UserDefaults.standard.string(forKey: "playbackOutputID") ?? "")
+            loading = Task { [weak self] in
+                do {
+                    let time = try await player.currentItem?.asset.load(.duration)
+                    guard !Task.isCancelled, let self, self.audio === player else { return }
+                    let seconds = time?.seconds ?? 0
+                    self.duration = seconds.isFinite ? max(0, seconds) : 0
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    self?.error = "Could not load audio: \(error.localizedDescription)"
+                }
+            }
         } catch { self.error = "Could not play audio: \(error.localizedDescription)" }
     }
 
@@ -36,16 +48,23 @@ final class MeetingPlayer: ObservableObject {
         guard let audio else { return }
         if isPlaying { stop(); return }
         if position >= duration { seek(0) }
-        guard audio.play() else { error = "This audio format cannot be played."; return }
+        setOutput(UserDefaults.standard.string(forKey: "playbackOutputID") ?? "")
+        audio.play()
         isPlaying = true
         ticker = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(100))
                 guard !Task.isCancelled, let self, let audio = self.audio else { break }
-                self.position = audio.currentTime
-                if !audio.isPlaying {
+                let seconds = audio.currentTime().seconds
+                if seconds.isFinite { self.position = max(0, seconds) }
+                if audio.currentItem?.status == .failed {
+                    self.error = "This audio could not be played."
+                    self.stop()
+                    break
+                }
+                if self.duration > 0 && self.position >= self.duration - 0.05 {
                     self.position = self.duration
-                    self.isPlaying = false
+                    self.stop()
                     break
                 }
             }
@@ -54,7 +73,12 @@ final class MeetingPlayer: ObservableObject {
 
     func seek(_ value: Double) {
         position = min(duration, max(0, value))
-        audio?.currentTime = position
+        audio?.seek(to: CMTime(seconds: position, preferredTimescale: 600))
+    }
+
+    func setOutput(_ id: String) {
+        let available = AudioDevices.outputs.contains { $0.id == id }
+        audio?.audioOutputDeviceUniqueID = id.isEmpty || !available ? nil : id
     }
 
     func stop() {
@@ -67,6 +91,7 @@ final class MeetingPlayer: ObservableObject {
 
 struct MeetingPlayerView: View {
     @ObservedObject var player: MeetingPlayer
+    @AppStorage("playbackOutputID") private var outputID = ""
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 16) {
@@ -90,6 +115,6 @@ struct MeetingPlayerView: View {
                 }
             }
             if let error = player.error { Text(error).font(.caption).foregroundStyle(.secondary) }
-        }
+        }.onChange(of: outputID) { _, value in player.setOutput(value) }
     }
 }

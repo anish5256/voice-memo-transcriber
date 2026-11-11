@@ -23,8 +23,6 @@ from pathlib import Path
 import numpy as np
 from scipy.cluster.vq import kmeans2
 import soundfile as sf
-import sherpa_onnx
-import mlx_whisper
 
 WHISPER = "mlx-community/whisper-large-v3-mlx"
 DEFAULT_GLOSSARY = Path.home() / ".voice-memo-glossary.txt"   # personal; lives outside the repo
@@ -74,6 +72,7 @@ def windows(a, b, w=1.0, h=0.5):
 
 class Embedder:
     def __init__(self, path):
+        import sherpa_onnx
         cfg = sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(path), num_threads=4)
         self.ex = sherpa_onnx.SpeakerEmbeddingExtractor(cfg)
 
@@ -84,8 +83,9 @@ class Embedder:
         return unit(np.array(self.ex.compute(s)))
 
 
-def speech_mask(x, models):
-    """Seconds-resolution boolean mask of where speech happens (speaker ids are ignored)."""
+def segmentation_model(models):
+    """Construct the reusable speech detector."""
+    import sherpa_onnx
     cfg = sherpa_onnx.OfflineSpeakerDiarizationConfig(
         segmentation=sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
             pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(
@@ -95,7 +95,12 @@ def speech_mask(x, models):
             model=str(models / "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"), num_threads=4),
         clustering=sherpa_onnx.FastClusteringConfig(num_clusters=2, threshold=0.5),
         min_duration_on=0.3, min_duration_off=0.5)
-    sd = sherpa_onnx.OfflineSpeakerDiarization(cfg)
+    return sherpa_onnx.OfflineSpeakerDiarization(cfg)
+
+
+def speech_mask(x, models, detector=None):
+    """Seconds-resolution boolean mask of where speech happens (speaker ids are ignored)."""
+    sd = detector if detector is not None else segmentation_model(models)
     mask = np.zeros(int(len(x) / SR * 10) + 2, bool)
     for s in sd.process(x).sort_by_start_time():
         mask[int(s.start * 10):int(s.end * 10)] = True
@@ -200,19 +205,39 @@ def label_pieces(x, models, num_speakers=None):
     return split_long([(float(a), float(b), int(l)) for a, b, l in pieces], x)
 
 
-def transcribe_piece(clip, mode, prompt):
+def transcribe_result(clip, mode, prompt, *, temperature=None):
+    """Decode with the shared settings and loop guard, retaining Whisper timestamps."""
+    import mlx_whisper
     base = dict(verbose=None, condition_on_previous_text=False,
                 compression_ratio_threshold=2.4, logprob_threshold=-1.0)
     kw = (dict(language="hi", task="translate") if mode == "en"
           else dict(language="en", task="transcribe", initial_prompt=prompt or DEFAULT_HINGLISH_PROMPT))
-    for temp in ((0.0, 0.2, 0.4, 0.6), (0.4,), (0.8,)):  # retry looped decodes hotter
-        t = mlx_whisper.transcribe(clip, path_or_hf_repo=WHISPER, temperature=temp, **base, **kw)["text"].strip()
+    temperatures = ((0.0, 0.2, 0.4, 0.6), (0.4,), (0.8,)) if temperature is None else (temperature,)
+    for temp in temperatures:  # retry looped decodes hotter
+        result = mlx_whisper.transcribe(clip, path_or_hf_repo=WHISPER, temperature=temp, **base, **kw)
+        t = result["text"].strip()
         if not loopy(t):
             break
     else:
-        return "[unclear - overlapping speech]"
+        t = "[unclear - overlapping speech]"
+        return dict(text=t, segments=[dict(start=0, end=len(clip) / SR, text=t)])
     # whisper invents long text on sub-1.3 s clips; drop it
-    return "" if (len(clip) / SR < 1.3 and len(t.split()) > 6) else t
+    if len(clip) / SR < 1.3 and len(t.split()) > 6:
+        return dict(text="", segments=[])
+    return result
+
+
+def transcribe_piece(clip, mode, prompt):
+    return transcribe_result(clip, mode, prompt)["text"].strip()
+
+
+def bundle_text(rows, glossary):
+    """rows contain (start, speaker, Hinglish, English)."""
+    segs = "\n\n".join(
+        f"[{int(s // 60)}:{s % 60:04.1f}] Speaker {l}\n  Hinglish: {h or '[nothing recognised]'}\n  English:  {e or '[nothing recognised]'}"
+        for s, l, h, e in rows)
+    return (LLM_INSTRUCTIONS + "\n## Glossary (context, not replacements)\n" + glossary +
+            "\n\n## Segments\n\n" + segs + "\n")
 
 
 def main():
@@ -261,12 +286,10 @@ def main():
     if "en" in results and "hing" in results:
         gpath = a.glossary_file or DEFAULT_GLOSSARY
         glossary = gpath.read_text(encoding="utf-8").strip() if gpath.exists() else "(none provided)"
-        segs = "\n\n".join(
-            f"{stamp(s)} Speaker {l}\n  Hinglish: {h or '[nothing recognised]'}\n  English:  {e or '[nothing recognised]'}"
-            for (s, l, h), (_, _, e) in zip(results["hing"], results["en"]))
         bundle = a.out_dir / f"{audio.stem}.for-llm.md"
-        bundle.write_text(LLM_INSTRUCTIONS + "\n## Glossary (context, not replacements)\n" + glossary +
-                          "\n\n## Segments\n\n" + segs + "\n", encoding="utf-8")
+        bundle.write_text(bundle_text(
+            [(s, l, h, e) for (s, l, h), (_, _, e) in zip(results["hing"], results["en"])],
+            glossary), encoding="utf-8")
         print("wrote", bundle, flush=True)
 
 

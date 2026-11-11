@@ -241,7 +241,8 @@ def organize(audio, work, meetings, recorded, summary, speakers, backend, model,
 def parser():
     ap = argparse.ArgumentParser(description=__doc__)
     providers = ['codex', 'claude', 'anthropic', 'proxy', 'fake']
-    ap.add_argument('audio', type=Path)
+    ap.add_argument('audio', type=Path, nargs='?')
+    ap.add_argument('--live-session', type=Path)
     ap.add_argument('--meetings-dir', type=Path, default=Path.home() / 'Meetings')
     ap.add_argument('--summary-backend', '--backend', choices=providers, default='codex')
     ap.add_argument('--summary-model', default='')
@@ -256,28 +257,40 @@ def parser():
 
 def main():
     args = parser().parse_args()
+    if (args.audio is None) == (args.live_session is None):
+        parser().error("provide either audio or --live-session")
+    session = args.live_session.expanduser().resolve() if args.live_session else None
     provider = args.summary_backend
     legacy = args.codex_model if provider == 'codex' else (args.claude_model if provider in ('claude', 'anthropic') else args.proxy_model if provider == 'proxy' else '')
     model = default_model(provider, args.summary_model or legacy)
     correct_model = default_model(args.correct_backend, args.correct_model)
     meetings = args.meetings_dir.expanduser().resolve()
     work = meetings / '_work' / (datetime.now().strftime('%Y%m%d-%H%M%S-%f') + '-' +
-                                (sanitize_title(args.audio.stem) or 'audio'))
+                                (sanitize_title((session or args.audio).stem) or 'audio'))
     try:
         work.parent.mkdir(parents=True, exist_ok=True)
         work.mkdir()
-        audio = args.audio.expanduser().resolve(strict=True)
-        recorded = datetime.fromtimestamp(audio.stat().st_mtime).astimezone()
+        audio = session / "recording.m4a" if session else args.audio.expanduser().resolve(strict=True)
+        recorded = (datetime.fromisoformat(json.loads((session / "session.json").read_text())["started_at"])
+                    if session else datetime.fromtimestamp(audio.stat().st_mtime).astimezone())
         repo = Path(__file__).resolve().parent
         with (work / 'pipeline.log').open('a', encoding='utf-8') as log:
-            emit('transcribing')
-            run([sys.executable, '-I', str(repo / 'transcribe.py'), str(audio),
-                 '--models-dir', str(repo / 'models'), '--out-dir', str(work)], work, log)
-            matches = re.findall(r'detected (\d+) speakers',
-                                 (work / 'pipeline.log').read_text(encoding='utf-8', errors='replace'))
-            # Short recordings bypass the transcriber's speaker-count print.
-            speakers = int(matches[-1]) if matches else len({
-                piece[2] for piece in json.loads((work / 'pieces.json').read_text())})
+            if session:
+                # -I omits the script directory from sys.path.
+                if str(repo) not in sys.path:
+                    sys.path.insert(0, str(repo))
+                import live_transcribe
+                emit('finalizing')
+                audio, speakers = live_transcribe.finalize(session, work, log)
+            else:
+                emit('transcribing')
+                run([sys.executable, '-I', str(repo / 'transcribe.py'), str(audio),
+                     '--models-dir', str(repo / 'models'), '--out-dir', str(work)], work, log)
+                matches = re.findall(r'detected (\d+) speakers',
+                                     (work / 'pipeline.log').read_text(encoding='utf-8', errors='replace'))
+                # Short recordings bypass the transcriber's speaker-count print.
+                speakers = int(matches[-1]) if matches else len({
+                    piece[2] for piece in json.loads((work / 'pieces.json').read_text())})
             emit('cleaning')
             run([sys.executable, '-I', str(repo / 'clean.py'),
                  str(work / f'{audio.stem}.for-llm.md')], work, log)
@@ -301,6 +314,8 @@ def main():
                                      provider, model or None, log, args.correct_backend,
                                      correct_model, correction)
         shutil.rmtree(work)
+        if session:
+            shutil.rmtree(session)
         emit('done', folder=str(folder), title=title)
         return 0
     except Exception as error:

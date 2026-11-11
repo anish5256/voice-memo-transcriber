@@ -58,11 +58,22 @@ struct ContentView: View {
         } detail: {
             VStack(spacing: 0) {
                 connectionNotice
-                if let meeting = library.meetings.first(where: { $0.id == selection }) {
+                if recorder.isBusy {
+                    LiveRecordingView(recorder: recorder)
+                } else if let meeting = library.meetings.first(where: { $0.id == selection }) {
                     MeetingDetailView(meeting: meeting).id(meeting.id)
                 } else {
                     ContentUnavailableView("No Meeting Selected", systemImage: "waveform",
                                            description: Text("Record or drop an audio file to get started."))
+                }
+                // Lives inside the detail column: a safeAreaInset on the whole split view
+                // re-lays out every frame of the sidebar animation and makes it jump.
+                if let message = queue.notice ?? recorder.message ?? library.error {
+                    HStack {
+                        Text(message).textSelection(.enabled)
+                        Spacer()
+                        Button("Dismiss") { queue.notice = nil; recorder.message = nil; library.error = nil }
+                    }.font(.callout).padding(10).background(.bar)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -90,16 +101,7 @@ struct ContentView: View {
             }
             return !providers.isEmpty
         }
-        .safeAreaInset(edge: .bottom) {
-            if let message = queue.notice ?? recorder.message ?? library.error {
-                HStack {
-                    Text(message).textSelection(.enabled)
-                    Spacer()
-                    Button("Dismiss") { queue.notice = nil; recorder.message = nil; library.error = nil }
-                }.font(.callout).padding(10).background(.bar)
-            }
-        }
-        .task { await reload(); await refreshAccounts() }
+        .task { await reload(); await refreshAccounts(); queue.recoverLiveSessions() }
         .onChange(of: meetingsPath) { _, _ in Task { await reload() } }
         .onChange(of: finishedIDs) { old, new in
             let completed = new.filter { !old.contains($0) }
@@ -179,6 +181,7 @@ private struct ProcessingRow: View {
         switch job.stage {
         case "queued": name = "Queued"
         case "starting": name = "Starting…"
+        case "finalizing": name = "Finalizing…"
         case "transcribing": name = "Transcribing…"
         case "cleaning": name = "Cleaning…"
         case "correcting": name = "Correcting"

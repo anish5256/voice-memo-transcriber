@@ -139,3 +139,10 @@ and filed as `~/Meetings/YYYY/MM/YYYY-MM-DD HHMM - <Title>/` (audio, `summary.md
   (no MCP/connector tools); `proxy` uses an OpenAI-compatible endpoint such as CLIProxyAPI
   (`CLIPROXY_API_KEY` env var). The transcript text leaves the Mac for the summary step only.
 - Tests: `venv/bin/python -m unittest tests/test_summarize.py`.
+
+### Live recording
+Record in MeetingNotes and the audio is saved in 30 s segments that `live_transcribe.py watch` transcribes
+while you talk (~18 s of compute per 30 s on an M3 Pro), so after Stop only the last segment, speaker
+clustering, correction and the summary remain. Pick the microphone next to the record button; pause/resume
+any time. Interrupted sessions in `~/Meetings/_live/` are finished automatically on the next launch.
+Tests: `venv/bin/python -m unittest tests/test_live.py tests/test_summarize.py` and `cd mac-app && swift test`.

@@ -6,6 +6,7 @@ struct Job: Identifiable, Sendable {
     let file: URL
     let name: String
     let settings: JobSettings
+    var live = false
     var stage = "queued"
     var message: String?
     var folder: String?
@@ -29,12 +30,15 @@ final class JobQueue: ObservableObject {
     @Published private(set) var jobs: [Job] = []
     @Published var notice: String?
     private var running = false
+    private var recovered = false
+    private let recoveryCandidates: [URL]
     private let account: ProviderAccount
     private let claudeAccount: ProviderAccount
 
     init(account: ProviderAccount, claudeAccount: ProviderAccount) {
         self.account = account
         self.claudeAccount = claudeAccount
+        recoveryCandidates = LiveSessionScanner.scan(meetings: Paths.url(SettingsView.snapshot().meetings), queued: [])
     }
 
     func importFiles(_ urls: [URL]) async {
@@ -60,9 +64,24 @@ final class JobQueue: ObservableObject {
         }
     }
 
-    func enqueue(_ url: URL, settings: JobSettings, name: String? = nil) {
-        jobs.append(Job(file: url, name: name ?? url.lastPathComponent, settings: settings))
+    func enqueue(_ url: URL, settings: JobSettings, name: String? = nil, live: Bool = false) {
+        jobs.append(Job(file: url, name: name ?? url.lastPathComponent, settings: settings, live: live))
         runNext()
+    }
+
+    func recoverLiveSessions() {
+        guard !recovered else { return }
+        recovered = true
+        let settings = SettingsView.snapshot()
+        // This snapshot was taken at initialization, before any new capture can start.
+        let sessions = recoveryCandidates
+        for session in sessions where !jobs.contains(where: { $0.file.standardizedFileURL == session.standardizedFileURL }) {
+            do {
+                // No capture is active for these launch-recovered sessions.
+                try Data().write(to: session.appendingPathComponent("STOP"), options: .atomic)
+                enqueue(session, settings: settings, live: true)
+            } catch { notice = "Could not recover session: \(error.localizedDescription)" }
+        }
     }
 
     private func runNext() {
@@ -71,6 +90,11 @@ final class JobQueue: ObservableObject {
         update(job.id) { $0.stage = "starting" }
         Task {
             let providers = [job.settings.summaryProvider, job.settings.correctProvider]
+            // Launch recovery can race an activation-triggered account refresh.
+            while (providers.contains("codex") && account.state == .checking) ||
+                  (providers.contains("claude") && claudeAccount.state == .checking) {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
             let error: String?
             if providers.contains("codex"), account.state != .connected {
                 error = "Connect ChatGPT first (button at the top)"
@@ -100,6 +124,10 @@ final class JobQueue: ObservableObject {
                 if $0.error != nil { $0.stage = "error" }
                 $0.finished = true
                 if $0.error == nil {
+                    if !$0.live, let title = $0.title {
+                        do { try RecordingRenamer.rename($0.file, title: title, meetings: Paths.url($0.settings.meetings)) }
+                        catch { notice = "Meeting saved, but recording could not be renamed: \(error.localizedDescription)" }
+                    }
                     let inbox = Paths.url($0.settings.meetings).appendingPathComponent("_inbox")
                         .standardizedFileURL
                     let file = $0.file.standardizedFileURL
@@ -139,7 +167,9 @@ final class JobQueue: ObservableObject {
         let repo = Paths.url(job.settings.repo)
         process.executableURL = repo.appendingPathComponent("venv/bin/python")
         process.currentDirectoryURL = repo
-        let args = ["-I", repo.appendingPathComponent("summarize.py").path, job.file.path,
+        // Part C accepts --live-session without an AUDIO positional.
+        let input = job.live ? ["--live-session", job.file.path] : [job.file.path]
+        let args = ["-I", repo.appendingPathComponent("summarize.py").path] + input + [
                     "--meetings-dir", Paths.url(job.settings.meetings).path,
                     "--summary-backend", job.settings.summaryProvider,
                     "--summary-model", job.settings.summaryModel,
@@ -147,8 +177,7 @@ final class JobQueue: ObservableObject {
                     "--correct-model", job.settings.correctModel,
                     "--proxy-url", job.settings.proxyURL]
         process.arguments = args
-        var environment = ProcessInfo.processInfo.environment
-        environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (environment["PATH"] ?? "")
+        var environment = ChildEnvironment.standard
         environment["CLIPROXY_API_KEY"] = job.settings.proxyKey
         environment.removeValue(forKey: "ANTHROPIC_API_KEY")
         if [job.settings.summaryProvider, job.settings.correctProvider].contains("anthropic") {

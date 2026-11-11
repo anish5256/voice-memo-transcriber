@@ -107,3 +107,44 @@ never invent owners or dates, mark unsure names/words with [?].
 
 ## Not in scope
 Live transcription, editing summaries, cloud sync, sandboxing/notarisation, auto-starting CLIProxyAPI.
+
+## Part C: live recording (mic choice, pause, transcribe-while-recording)
+
+Goal: when a recording stops, only the last segment, speaker clustering, correction and summary remain.
+
+### Session folder (contract between app and Python)
+`<meetings>/_live/<session-id>/` (session-id = `YYYYmmdd-HHMMSS`):
+- `session.json` {started_at (ISO, local tz), input_device_name, segment_seconds: 30}
+- `segments/seg-00001.m4a`, `seg-00002.m4a`, … written by the app (AAC mono 48 kHz). A segment is complete only when the app has
+  written the empty marker `segments/seg-NNNNN.done` (written in the file-output "did finish" callback). Pausing does not create gaps:
+  the session timeline is the concatenation of recorded audio (offset of segment n = sum of durations of segments < n, via ffprobe).
+- `STOP` empty marker written by the app after the last segment's `.done`.
+- Written by Python: `segments/seg-NNNNN.json` (per-segment transcript: whisper segments with start/end relative to the segment,
+  Hinglish text and English translation), `segments/seg-NNNNN.npz` (1 s / 0.5 s-hop speaker-embedding windows: times relative to the
+  segment + both embedding models' vectors), `live.txt` (one line per transcribed whisper segment, `[m:ss] text`, appended, for the UI).
+
+### Python
+- `venv/bin/python -I live_transcribe.py watch <session>`: loads whisper large-v3 (MLX) and the two embedding models ONCE; loops over
+  complete segments in order that have no `.json` yet; writes `.json` + `.npz` atomically (write tmp, rename); appends `live.txt`;
+  prints JSON lines `{"event":"segment","index":n,"text":"…"}`; when `STOP` exists and every complete segment is processed prints
+  `{"event":"stopped"}` and exits 0. Never crashes on one bad segment (log + `{"event":"segment_error",…}`, continue).
+- `summarize.py --live-session <session> [all existing flags]` replaces the transcription stage with `{"stage":"finalizing"}`:
+  waits up to 10 min for a still-running watcher (no `STOP`+all done → proceed anyway after timeout), processes any complete segment
+  lacking `.json`/`.npz` itself (crash recovery), skips unreadable segments (truncated m4a) with a log line, concatenates readable
+  segments to `<session>/recording.m4a` (ffmpeg concat, `-c copy`), clusters speakers over all windows with the same spectral method +
+  single-speaker separation cutoff as transcribe.py, assigns each whisper segment to the speaker with most overlapping windows, and
+  writes the same work files transcribe.py writes (`<stem>.Hinglish.txt`, `<stem>.English.txt`, `<stem>.for-llm.md`, `pieces.json`),
+  then continues with cleaning → correcting → summarizing → organizing exactly as today (audio = recording.m4a,
+  recorded_at = session started_at). Zero readable segments → `{"stage":"error"}`. On success the session folder is deleted.
+- Reuse transcribe.py's functions (import it) instead of copying code.
+
+### App
+- Recorder: AVCaptureSession + AVCaptureDeviceInput(selected mic) + AVCaptureAudioFileOutput; 30 s segments (switch files while
+  recording); Pause / Resume (pauseRecording/resumeRecording, timer excludes paused time); Stop → finish current segment, write
+  `.done` + `STOP`, enqueue a job with `--live-session`. Starts the watcher at Record, shows live transcript (live.txt / stdout events)
+  in the detail pane while recording.
+- Mic picker (menu next to the record button; default = system default; remembers uniqueID; falls back to default if missing) and
+  playback output picker (Settings ▸ General; AVPlayer.audioOutputDeviceUniqueID; CoreAudio device list).
+- On launch: any `_live/<session>` with segments but no queued job → enqueue `--live-session` (crash recovery).
+- After a job finishes, a source file inside `_recordings/` is renamed to `<summary title>.m4a` (unique name).
+- Swift test target `MeetingNotesTests` for pure logic (recorder state machine, segment naming/ordering, recovery detection, rename).

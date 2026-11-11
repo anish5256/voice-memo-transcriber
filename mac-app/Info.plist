@@ -2,13 +2,23 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleExecutable</key><string>MeetingNotes</string>
-    <key>CFBundleIdentifier</key><string>com.anish.meetingnotes</string>
-    <key>CFBundleName</key><string>MeetingNotes</string>
-    <key>CFBundlePackageType</key><string>APPL</string>
-    <key>LSMinimumSystemVersion</key><string>14.0</string>
-    <key>NSMicrophoneUsageDescription</key><string>Record meeting audio to create local transcripts and meeting notes.</string>
-    <key>NSAudioCaptureUsageDescription</key><string>Record the audio of calls (other participants) together with your microphone to create meeting notes.</string>
-    <key>NSHighResolutionCapable</key><true/>
+	<key>CFBundleExecutable</key>
+	<string>MeetingNotes</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.anish.meetingnotes</string>
+	<key>CFBundleName</key>
+	<string>MeetingNotes</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Record the audio of calls (other participants) together with your microphone to create meeting notes.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Record meeting audio to create local transcripts and meeting notes.</string>
 </dict>
 </plist>

@@ -7,6 +7,8 @@ final class Recorder: ObservableObject {
     @Published private(set) var requestingPermission = false
     @Published private(set) var startedAt: Date?
     @Published var message: String?
+    @Published private(set) var levels: [Float] = Array(repeating: 0, count: 12)
+    private var meteringTask: Task<Void, Never>?
     private var audio: AVAudioRecorder?
     private var settings: JobSettings?
 
@@ -37,6 +39,7 @@ final class Recorder: ObservableObject {
                 AVNumberOfChannelsKey: 1,
                 AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
             ])
+            recorder.isMeteringEnabled = true
             guard recorder.record() else {
                 throw NSError(domain: "MeetingNotes", code: 1,
                               userInfo: [NSLocalizedDescriptionKey: "The microphone could not start recording."])
@@ -45,12 +48,26 @@ final class Recorder: ObservableObject {
             self.settings = settings
             startedAt = Date()
             isRecording = true
+            meteringTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(80))
+                    guard !Task.isCancelled, let self, let audio = self.audio else { break }
+                    audio.updateMeters()
+                    let power = audio.averagePower(forChannel: 0)
+                    let level = min(1, max(0, (power + 55) / 55))
+                    self.levels.removeFirst()
+                    self.levels.append(level)
+                }
+            }
             message = nil
         } catch { message = error.localizedDescription }
     }
 
     func stop() -> (URL, JobSettings)? {
         guard let audio, let settings else { return nil }
+        meteringTask?.cancel()
+        meteringTask = nil
+        levels = Array(repeating: 0, count: 12)
         audio.stop()
         self.audio = nil
         self.settings = nil

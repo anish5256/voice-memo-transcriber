@@ -59,9 +59,22 @@ never invent owners or dates, mark unsure names/words with [?].
 
 - `Package.swift`, `Sources/MeetingNotes/*.swift`, `Info.plist`, `build_app.sh` -> `mac-app/build/MeetingNotes.app`
   (bundle id `com.anish.meetingnotes`, `NSMicrophoneUsageDescription`, `LSMinimumSystemVersion` 14.0, ad-hoc `codesign -s -`).
-- One window: a large drop zone (accepts m4a mp3 wav aac caf ogg opus flac aiff mp4 mov), a Record/Stop button with elapsed
-  time (AVAudioRecorder, AAC m4a 48 kHz mono, saved to `<meetings-dir>/_recordings/Recording YYYY-MM-DD HHmm.m4a`, then queued),
-  and a job list: file name, current stage, spinner; on done "Open folder" + "Open summary"; on error the message + "Show log".
+- Voice Memos-style native `NavigationSplitView`, minimum 820×520, standard toolbar with Import Audio (+),
+  system colors/materials and SF Symbols. The whole window accepts m4a mp3 wav aac caf ogg opus flac aiff mp4 mov,
+  with a subtle dashed “Drop to transcribe” overlay while targeted.
+- “All Meetings” sidebar scans `<meetings>/YYYY/MM/*/meta.json` on launch, activation, folder changes and
+  job completion; title search, newest first, date/time/duration subtitles, most recent selected on launch.
+  Processing/queued/failed jobs occupy a separate top section with progress, stage/chunk messages, errors and Show Log.
+  Successful jobs leave that section and their meeting is selected. Meeting context menus offer Show in Finder,
+  Open Summary in Default App and reversible Move to Trash via `NSWorkspace.recycle`.
+- Centered sidebar recording control: round red record button, red stop square inside a ring while recording,
+  elapsed time and 12 live meter bars (`AVAudioRecorder.averagePower`). AAC m4a 48 kHz mono recordings go to
+  `<meetings-dir>/_recordings/Recording YYYY-MM-DD HHmm.m4a`, then queue with settings captured at recording start.
+- Detail shows the title, date/time/duration/speaker count, `AVAudioPlayer` controls for `audio.*`, scrubber and
+  elapsed/remaining times. Summary/Transcript segmented picker; corrected transcript preferred over Hinglish,
+  optional Show English. Tiny selectable Markdown renderer hides the top-level title, styles section headings,
+  unchecked action items, bullets and inline bold; transcript rows separate timestamp, speaker and text.
+  No selection uses the native “No Meeting Selected” empty state.
 - Dropped files are first COPIED by the app into `<meetings-dir>/_inbox/` (the app holds the user's file access), then processed.
 - Jobs run one at a time. Runner: `Process` with `<repo>/venv/bin/python -I <repo>/summarize.py <file>
   --meetings-dir … --summary-backend … --summary-model … --correct-backend … --correct-model … --proxy-url …`.
@@ -74,16 +87,20 @@ never invent owners or dates, mark unsure names/words with [?].
   Claude/Claude API offers claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5, claude-fable-5-2 and Custom…;
   endpoint model is a text field defaulting to gpt-5. Custom… reveals a text field; Off hides models.
   Store correctProvider/correctModel/summaryProvider/summaryModel; migrate old backend and its model
-  on first launch. Keep Account and collapsed Advanced credentials/endpoint controls; Advanced appears
-  when either stage needs it. Settings apply to newly queued jobs.
-- Separate ChatGPT and Claude account rows in the header and Settings Account section, each with its own spinner/messages.
+  on first launch. Settings apply to newly queued jobs. Settings uses a 520pt grouped Form TabView:
+  Models (existing provider/model choices), Accounts (status dots, Connect/Sign Out), General (meetings folder
+  with directory chooser and repository path), Advanced (custom endpoint URL/model/key and Anthropic key).
+  Endpoint model controls reuse existing stage model keys; no settings keys or migration contracts change.
+- Separate ChatGPT and Claude account rows live in Settings Accounts, each with its own spinner/messages.
   Claude uses `claude auth status` (exit 0 and JSON `loggedIn: true`), `claude auth login --claudeai`, and `claude auth logout`.
   Missing Claude shows “Claude Code is not installed”. Refresh both on launch and activation with the same output safety and timeout rules.
-- Shared ChatGPT account state in the header and Settings Account section. Connect runs `codex login` off the main actor,
+- Shared ChatGPT account state in the detail notice and Settings Accounts tab. Connect runs `codex login` off the main actor,
   with null stdin and a ten-minute timeout; users finish sign-in in their browser. Settings also offers Sign out (`codex logout`).
   Refresh with `codex login status` at launch and window activation, and after account changes. Resolve Codex from Homebrew,
   `/usr/local/bin`, or PATH, and include standard executable directories in child PATH. Never display or log account command output.
   Missing Codex shows an installation hint; checking/connecting show a spinner and connection shows green status.
+- Main window shows only a compact detail-area notice when current settings require a disconnected account
+  or a missing Anthropic key; Connect… opens Settings, where all account controls live.
 - Check both selected providers before starting a job. For codex, require connected account state; otherwise fail with “Connect ChatGPT first (button at the top)”
   and preserve the input file. Either step using Claude requires “Connect Claude first (button at the top)”; either step using anthropic with an empty key
   fail with “Add your Anthropic API key in Settings”.

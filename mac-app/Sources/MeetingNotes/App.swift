@@ -27,7 +27,7 @@ struct MeetingNotesApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(queue: queue, recorder: recorder, account: account, claudeAccount: claudeAccount)
-                .frame(minWidth: 640, minHeight: 480)
+                .frame(minWidth: 820, minHeight: 520)
         }
         .commands {
             CommandGroup(after: .newItem) {

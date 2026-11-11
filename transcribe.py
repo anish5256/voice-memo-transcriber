@@ -58,7 +58,7 @@ DEFAULT_HINGLISH_PROMPT = (
     "Nahi nahi, wo ho jayega, bas ek baar check kar lete hain. Okay, chalo phir baad mein baat karte hain."
 )
 SR = 16000
-LOOP = re.compile(r"(\w+(?:\s+\w+){0,3}?)(?:\s+\1){3,}")  # same 1-4 word phrase repeated 4+ times
+LOOP = re.compile(r"(\w+(?:\s+\w+){0,7}?)(?:\s+\1){3,}")  # same 1-8 word phrase repeated 4+ times
 
 
 def loopy(t):

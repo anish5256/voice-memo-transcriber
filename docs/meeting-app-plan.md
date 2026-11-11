@@ -148,3 +148,31 @@ Goal: when a recording stops, only the last segment, speaker clustering, correct
 - On launch: any `_live/<session>` with segments but no queued job → enqueue `--live-session` (crash recovery).
 - After a job finishes, a source file inside `_recordings/` is renamed to `<summary title>.m4a` (unique name).
 - Swift test target `MeetingNotesTests` for pure logic (recorder state machine, segment naming/ordering, recovery detection, rename).
+
+## Part D: system audio (calls) + mic as two tracks
+
+### Session contract additions
+- `session.json` adds `"system_audio": true|false`.
+- When system audio is on, every segment has a second file `segments/seg-NNNNN.sys.m4a` (AAC mono 48 kHz, the system output
+  mix with MeetingNotes itself excluded). `seg-NNNNN.done` is written only after BOTH files of that segment are closed. If system
+  capture fails mid-session the app keeps recording mic-only; segments without a `.sys.m4a` are treated as mic-only.
+
+### Python
+- Per segment with a `.sys.m4a`: transcribe the MIX (ffmpeg `amix=inputs=2:duration=longest:normalize=0`, then the existing piece
+  splitting / both whisper passes), so speech heard on both tracks (speaker echo) is transcribed once.
+- Source per whisper segment: compare mic and sys RMS (dBFS, 16 kHz mono) over the segment's time range. `sys` when the sys track is
+  active (>= -45 dBFS) and mic is not clearly louder (mic < sys + 10 dB); otherwise `mic`. Constants in one place. Store `source`
+  in the segment json.
+- Speaker embeddings for those segments are computed on the SYS audio only (remote voices).
+- Finalize (session with system_audio): Speaker 1 = the person recording (all `mic` segments). `sys` segments get remote speakers
+  from the existing spectral clustering + separation cutoff run over sys windows only, numbered from Speaker 2 by first appearance
+  (no separated clusters -> all Speaker 2). Mixed segments where both tracks are absent fall back to nearest labelled neighbour.
+  The bundle header notes "Speaker 1 is the person who recorded (microphone); other speakers came through the call audio."
+  `recording.m4a` = per-segment mixes concatenated. Mic-only sessions behave exactly as today.
+
+### App
+- Core Audio process tap (macOS 14.2+): `CATapDescription(stereoGlobalTapButExcludeProcesses:)` excluding MeetingNotes, a private
+  aggregate device containing the tap, an IO proc writing PCM to the current `.sys.m4a` (AVAudioFile, AAC mono 48 kHz, downmixed),
+  rotated at the same moment as the mic segment; paused together with the mic. Info.plist `NSAudioCaptureUsageDescription`.
+- UI: "Include system audio (calls)" toggle next to the mic picker (persisted). If the tap can't be created/started (permission denied,
+  older macOS) show a notice and record mic-only. Tear down tap + aggregate device on stop, on error and on quit.

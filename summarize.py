@@ -174,12 +174,13 @@ def correction_chunks(segments, limit=12000):
 def correct_bundle(bundle, provider, model, work, log, proxy_url):
     segments = list(SEG.finditer(bundle))
     chunks = correction_chunks(segments)
-    glossary = bundle.split('## Glossary', 1)[1].split('## Segments', 1)[0] if '## Glossary' in bundle else ''
+    # Keep speaker attribution and other bundle context in every correction chunk.
+    context = bundle.split('## Segments', 1)[0]
     counts = dict(accepted=0, rejected=0, missing=0)
     corrected = {}
     for i, chunk in enumerate(chunks, 1):
         emit('correcting', message=f'chunk {i}/{len(chunks)}')
-        prompt = CORRECTION_PROMPT + '\n## Glossary' + glossary + '\n## Segments\n\n' + '\n\n'.join(m[0] for m in chunk)
+        prompt = CORRECTION_PROMPT + '\n' + context + '\n## Segments\n\n' + '\n\n'.join(m[0] for m in chunk)
         try:
             output = ask_llm(provider, model, prompt, work, log, proxy_url)
             found = {m[1]: m[3].strip() for m in ONE_LINE.finditer(output)}

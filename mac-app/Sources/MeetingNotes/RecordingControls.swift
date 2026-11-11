@@ -3,6 +3,7 @@ import SwiftUI
 struct RecordingControls: View {
     @ObservedObject var recorder: Recorder
     @ObservedObject var queue: JobQueue
+    @AppStorage("includeSystemAudio") private var includeSystemAudio = false
     @AppStorage("microphoneID") private var microphoneID = ""
 
     var body: some View {
@@ -26,6 +27,10 @@ struct RecordingControls: View {
                 } label: { Image(systemName: "mic.fill") }
                 .menuStyle(.borderlessButton).fixedSize().disabled(recorder.isBusy)
                 .help("Recording microphone")
+                Toggle("Include system audio (calls)", isOn: $includeSystemAudio)
+                    .toggleStyle(.checkbox).font(.caption)
+                    .disabled(recorder.isBusy)
+                    .help("Records call audio from other participants. Participants should consent to being recorded.")
                 Button(action: toggleRecording) {
                     ZStack {
                         Circle().strokeBorder(recorder.isBusy ? Color.red : Color.secondary.opacity(0.3), lineWidth: 2)
@@ -50,7 +55,7 @@ struct RecordingControls: View {
         if recorder.isRecording { Task { await recorder.stop() } }
         else {
             Task {
-                await recorder.start(settings: SettingsView.snapshot(), microphoneID: microphoneID) { url, settings in
+                await recorder.start(settings: SettingsView.snapshot(), microphoneID: microphoneID, includeSystemAudio: includeSystemAudio) { url, settings in
                     queue.enqueue(url, settings: settings, live: true)
                 }
             }

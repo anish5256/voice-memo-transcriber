@@ -82,3 +82,11 @@ enum ChildEnvironment {
         return env
     }
 }
+
+// A mic callback can precede or follow system-file closure at a segment boundary.
+struct SegmentCompletion {
+    var microphoneFinished = false
+    var systemClosed = false
+    let systemRunning: Bool
+    var canPublish: Bool { microphoneFinished && (systemClosed || !systemRunning) }
+}

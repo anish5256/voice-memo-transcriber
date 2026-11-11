@@ -2,6 +2,30 @@ import XCTest
 @testable import MeetingNotes
 
 final class LiveSessionTests: XCTestCase {
+    func testSegmentCompletionRequiresBothTracksInEitherOrder() {
+        var micFirst = SegmentCompletion(systemRunning: true)
+        XCTAssertFalse(micFirst.canPublish)
+        micFirst.microphoneFinished = true
+        XCTAssertFalse(micFirst.canPublish)
+        micFirst.systemClosed = true
+        XCTAssertTrue(micFirst.canPublish)
+        var systemFirst = SegmentCompletion(systemRunning: true)
+        systemFirst.systemClosed = true
+        XCTAssertFalse(systemFirst.canPublish)
+        systemFirst.microphoneFinished = true
+        XCTAssertTrue(systemFirst.canPublish)
+    }
+    func testMicOnlyAndSystemFailureClosure() {
+        var micOnly = SegmentCompletion(systemRunning: false)
+        XCTAssertFalse(micOnly.canPublish)
+        micOnly.microphoneFinished = true
+        XCTAssertTrue(micOnly.canPublish)
+        var failedSystem = SegmentCompletion(systemRunning: true)
+        failedSystem.systemClosed = true // stop after failure closes the partial system file.
+        XCTAssertFalse(failedSystem.canPublish)
+        failedSystem.microphoneFinished = true
+        XCTAssertTrue(failedSystem.canPublish)
+    }
     func testStateTransitions() {
         var state = RecorderStateMachine()
         XCTAssertFalse(state.apply(.pause))
@@ -45,6 +69,7 @@ final class LiveSessionTests: XCTestCase {
         let session = try temporary()
         try segment(session, index: 10)
         try segment(session, index: 9)
+        try Data([1]).write(to: session.appendingPathComponent("segments/seg-00009.sys.m4a"))
         try Data().write(to: session.appendingPathComponent("segments/seg-00008.done"))
         XCTAssertEqual(SegmentNaming.segments(in: session).map(\.lastPathComponent), ["seg-00009.m4a", "seg-00010.m4a"])
     }

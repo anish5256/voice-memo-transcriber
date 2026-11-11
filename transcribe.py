@@ -205,6 +205,27 @@ def label_pieces(x, models, num_speakers=None):
     return split_long([(float(a), float(b), int(l)) for a, b, l in pieces], x)
 
 
+def filtered_result(result, prompt=None):
+    """Remove silence and (for prompted decodes) four-word prompt echoes."""
+    words = lambda text: re.sub(r"[^\w\s]", "", text.lower()).split()
+    prompt_words = words(prompt or "")
+    runs = {tuple(prompt_words[i:i + 4]) for i in range(len(prompt_words) - 3)}
+
+    def keep(segment):
+        if (segment.get('no_speech_prob') is not None and
+                segment.get('avg_logprob') is not None and
+                segment['no_speech_prob'] > .6 and segment['avg_logprob'] < -1.):
+            return False
+        tokens = words(segment['text'])
+        return not any(tuple(tokens[i:i + 4]) in runs for i in range(len(tokens) - 3))
+
+    segments = result.get('segments', [])
+    kept = [segment for segment in segments if keep(segment)]
+    if len(kept) == len(segments):
+        return result
+    return dict(result, segments=kept, text=' '.join(s['text'].strip() for s in kept))
+
+
 def transcribe_result(clip, mode, prompt, *, temperature=None):
     """Decode with the shared settings and loop guard, retaining Whisper timestamps."""
     import mlx_whisper
@@ -221,10 +242,7 @@ def transcribe_result(clip, mode, prompt, *, temperature=None):
     else:
         t = "[unclear - overlapping speech]"
         return dict(text=t, segments=[dict(start=0, end=len(clip) / SR, text=t)])
-    # whisper invents long text on sub-1.3 s clips; drop it
-    if len(clip) / SR < 1.3 and len(t.split()) > 6:
-        return dict(text="", segments=[])
-    return result
+    return filtered_result(result, kw.get('initial_prompt'))
 
 
 def transcribe_piece(clip, mode, prompt):

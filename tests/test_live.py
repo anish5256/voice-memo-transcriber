@@ -52,6 +52,103 @@ class LiveTests(unittest.TestCase):
             path.with_suffix('.done').touch()
         return path
 
+    def enable_system(self):
+        meta = self.session / 'session.json'
+        meta.write_text(json.dumps(dict(started_at='2026-05-07T12:30:00+05:30',
+                                        system_audio=True)))
+
+    def tone(self, path, volume):
+        subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i',
+                        'sine=frequency=440:duration=1:sample_rate=48000',
+                        '-af', f'volume={volume}', '-c:a', 'aac', str(path)],
+                       check=True, capture_output=True)
+
+    def test_source_rule(self):
+        tone = np.ones(live.tr.SR) * .1
+        silence = np.zeros(live.tr.SR)
+        self.assertEqual(live.source_for(tone * .2, tone, 0, 1), 'sys')
+        self.assertEqual(live.source_for(tone, silence, 0, 1), 'mic')
+        self.assertEqual(live.source_for(tone * 4, tone, 0, 1), 'mic')
+        self.assertIsNone(live.source_for(silence, silence, 0, 1))
+        self.assertAlmostEqual(live.rms_db(tone, 0, 1), -20.)
+
+    def test_system_mix_remote_clusters_and_recording(self):
+        self.enable_system()
+        paths = [self.segment(i) for i in range(1, 4)]
+        for i, path in enumerate(paths):
+            self.tone(path, 0 if i != 1 else 1)
+            self.tone(path.with_suffix('.sys.m4a'), 1 if i != 1 else 0)
+        def embed(path):
+            self.engine.embedded.append(path.name)
+            vector = [0., 1.] if '00003' in path.name else [1., 0.]
+            return dict(windows=np.array([[0., 1.]] * 4),
+                        embeddings0=np.array([vector] * 4),
+                        embeddings1=np.array([vector] * 4))
+        work = self.root / 'work'
+        with patch.object(self.engine, 'embed_segment', side_effect=embed), patch.object(
+                live.tr, 'spectral_cluster', return_value=(np.array([0]*8 + [1]*4), 2)), patch.object(
+                live.tr, 'separation', return_value=1):
+            audio, count = live.finalize(self.session, work, self.log)
+        self.assertEqual(count, 3)
+        self.assertEqual([r[2] for r in json.loads((work / 'pieces.json').read_text())], [2, 1, 3])
+        self.assertTrue(all(name.endswith('.sys.m4a') for name in self.engine.embedded))
+        self.assertTrue(all(name.endswith('.mix.m4a') for name in self.engine.transcribed))
+        self.assertEqual([json.loads(p.with_suffix('.json').read_text())[0]['source']
+                          for p in paths], ['sys', 'mic', 'sys'])
+        bundle = (work / 'recording.for-llm.md').read_text()
+        self.assertIn('## Speakers\n\n' + live.SYSTEM_NOTE, bundle)
+        self.assertLess(bundle.index('## Speakers'), bundle.index('## Segments'))
+        import clean
+        with patch('sys.argv', ['clean.py', str(work / 'recording.for-llm.md')]):
+            clean.main()
+        fixed = (work / 'recording.for-llm.names-fixed.md').read_text()
+        self.assertEqual(bundle.split('## Segments')[0], fixed.split('## Segments')[0])
+        self.assertTrue(all('.mix.m4a' in line for line in
+                            (self.session / 'concat.txt').read_text().splitlines()))
+        self.assertGreater(live.duration(audio), 2.9)
+        x = live.decode_track(audio)
+        self.assertGreater(np.sqrt(np.mean(x[:live.tr.SR] ** 2)), .05)
+
+    def test_single_remote_and_missing_system(self):
+        self.enable_system()
+        a, b = self.segment(1), self.segment(2)
+        self.tone(a, .1)  # Echo: microphone is weaker than the call.
+        self.tone(a.with_suffix('.sys.m4a'), 1)
+        self.tone(b, 1)
+        work = self.root / 'work'
+        live.finalize(self.session, work, self.log)
+        self.assertEqual([r[2] for r in json.loads((work / 'pieces.json').read_text())], [2, 1])
+        self.assertIn(b.name, self.engine.transcribed)
+        self.assertIn('missing/unreadable', self.log.getvalue())
+
+    def test_enabled_without_system_is_unchanged(self):
+        self.enable_system()
+        a = self.segment(1, real=True)
+        work = self.root / 'work'
+        live.finalize(self.session, work, self.log)
+        self.assertEqual(self.engine.transcribed, [a.name])
+        self.assertEqual(self.engine.embedded, [a.name])
+        self.assertNotIn('source', json.loads(a.with_suffix('.json').read_text())[0])
+        self.assertNotIn(live.SYSTEM_NOTE, (work / 'recording.for-llm.md').read_text())
+
+    def test_call_assignment_single_cluster_and_absent_tracks(self):
+        rows = [dict(start=i, end=i+.5, source=source, hinglish='h', english='e')
+                for i, source in enumerate(['sys', None, 'sys', 'mic'])]
+        pieces = live.assign_call_speakers(np.array([[0., 1.], [2., 3.]]),
+                                          np.array([0, 0]), rows)
+        self.assertEqual([p[2] for p in pieces], [2, 2, 2, 1])
+
+    def test_unreadable_system_is_mic_only(self):
+        self.enable_system()
+        path = self.segment(1, real=True)
+        path.with_suffix('.sys.m4a').write_bytes(b'broken')
+        work = self.root / 'work'
+        live.finalize(self.session, work, self.log)
+        self.assertEqual(self.engine.transcribed, [path.name])
+        self.assertEqual(self.engine.embedded, [path.name])
+        self.assertIn('missing/unreadable', self.log.getvalue())
+        self.assertNotIn(live.SYSTEM_NOTE, (work / 'recording.for-llm.md').read_text())
+
     def test_discovery(self):
         b, a = self.segment(10), self.segment(2)
         self.segment(1, False)
@@ -102,6 +199,7 @@ class LiveTests(unittest.TestCase):
         work = self.root / 'work'
         audio, speakers = live.finalize(self.session, work, self.log)
         self.assertTrue(audio.is_file())
+        self.assertNotIn('## Speakers', (work / 'recording.for-llm.md').read_text())
         self.assertEqual(speakers, 1)
         self.assertIn('[0:00.1] Speaker 1:', (work / 'recording.Hinglish.txt').read_text())
         self.assertIn('English:  There is a meeting', (work / 'recording.for-llm.md').read_text())
@@ -155,6 +253,27 @@ class LiveTests(unittest.TestCase):
         self.assertEqual([c.kwargs['temperature'] for c in decoder.call_args_list],
                          [(0., .2, .4, .6), (.4,), (.8,)])
         self.assertIn('unclear', result['segments'][0]['text'])
+
+    def test_live_filters_echo_and_silence_before_rows(self):
+        from types import SimpleNamespace
+        engine = live.Engine()
+        real = dict(start=.5, end=1, text='theek hai')
+        def decode(clip, **kw):
+            if kw['task'] == 'translate':
+                segments = [dict(start=0, end=.5, text='invented',
+                                 no_speech_prob=.9, avg_logprob=-2),
+                            dict(start=.5, end=1, text='all right')]
+            else:
+                segments = [dict(start=0, end=.5, text='chalo phir baad mein'), real]
+            return dict(text=' '.join(s['text'] for s in segments), segments=segments)
+        @contextlib.contextmanager
+        def audio(path):
+            yield np.zeros(live.tr.SR)
+        with patch.object(engine, 'audio', audio), patch.object(
+                engine, 'segment_mask', return_value=np.ones(10, bool)), patch.dict(
+                'sys.modules', {'mlx_whisper': SimpleNamespace(transcribe=decode)}):
+            rows = engine.transcribe_segment(Path('unused'))
+        self.assertEqual(rows, [dict(start=.5, end=1, hinglish='theek hai', english='all right')])
 
     def test_piece_splitting(self):
         self.assertEqual(live.speech_pieces(np.ones(300, bool), 30),

@@ -104,7 +104,8 @@ class SummarizeTests(unittest.TestCase):
 
     @staticmethod
     def bundle(texts):
-        return '## Glossary\n- Rohan\n\n## Segments\n\n' + '\n\n'.join(
+        return ('## Glossary\n- Rohan\n\n## Speakers\n\n'
+                'Speaker 1 is the person who recorded (microphone); other speakers came through the call audio.\n\n## Segments\n\n') + '\n\n'.join(
             f'[{i}:00.0] Speaker 1\n  Hinglish: {text}\n  English:  English {i}'
             for i, text in enumerate(texts)) + '\n'
 
@@ -140,6 +141,8 @@ class SummarizeTests(unittest.TestCase):
         self.assertEqual(counts, dict(accepted=2, rejected=0, missing=1))
         self.assertIn('failed test chunk', log.getvalue())
         self.assertTrue(all('## Glossary\n- Rohan' in prompt for prompt in calls))
+        self.assertTrue(all('## Speakers' in prompt for prompt in calls))
+        self.assertIn('## Speakers', result)
         self.assertEqual([json.loads(line)['message'] for line in events.getvalue().splitlines()],
                          ['chunk 1/3', 'chunk 2/3', 'chunk 3/3'])
 
@@ -215,15 +218,17 @@ class SummarizeTests(unittest.TestCase):
                     (work / 'memo.English.txt').write_text('English')
                 else:
                     (work / 'memo.Hinglish.glossary-fixed.txt').write_text('Hinglish fixed')
-                    (work / 'memo.for-llm.names-fixed.md').write_text(self.bundle(['misheard words']) if correct else 'names fixed')
+                    (work / 'memo.for-llm.names-fixed.md').write_text(self.bundle(['misheard words']) if correct else self.bundle(['names fixed']))
                 return subprocess.CompletedProcess(command, 0)
 
             output = io.StringIO()
             real_ask = summarize.ask_llm
             def ask(provider, model, prompt, work, log, url):
+                self.assertIn('## Speakers', prompt)
+                self.assertIn('Speaker 1 is the person who recorded (microphone); other speakers came through the call audio.', prompt)
                 if prompt.startswith(summarize.CORRECTION_PROMPT):
                     return '[0:00.0] Speaker 1: repaired words'
-                self.assertIn('Hinglish: repaired words' if correct else 'names fixed', prompt)
+                self.assertIn('Hinglish: repaired words' if correct else self.bundle(['names fixed']), prompt)
                 if correct:
                     self.assertIn('English:  English 0', prompt)
                     self.assertNotIn('misheard words', prompt)
@@ -248,7 +253,7 @@ class SummarizeTests(unittest.TestCase):
             self.assertEqual((folder / 'transcript.hinglish.txt').read_text(), 'Hinglish fixed')
             self.assertEqual((folder / 'transcript.english.txt').read_text(), 'English')
             self.assertEqual((folder / 'transcript.for-llm.md').read_text(),
-                             self.bundle(['misheard words']) if correct else 'names fixed')
+                             self.bundle(['misheard words']) if correct else self.bundle(['names fixed']))
             if correct:
                 self.assertEqual((folder / 'transcript.corrected.txt').read_text(),
                                  '[0:00.0] Speaker 1: repaired words')

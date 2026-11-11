@@ -8,6 +8,7 @@
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>NSMicrophoneUsageDescription</key><string>Record meeting audio to create local transcripts and meeting notes.</string>
+    <key>NSAudioCaptureUsageDescription</key><string>Record the audio of calls (other participants) together with your microphone to create meeting notes.</string>
     <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>

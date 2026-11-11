@@ -54,6 +54,66 @@ def duration(path):
     return value
 
 
+# Source attribution uses decoded mono samples, with full scale equal to 1.
+SYS_ACTIVE_DBFS = -45.
+MIC_MARGIN_DB = 10.
+SYSTEM_NOTE = "Speaker 1 is the person who recorded (microphone); other speakers came through the call audio."
+
+
+def system_enabled(session):
+    return bool(json.loads((Path(session) / 'session.json').read_text()).get('system_audio', False))
+
+
+def decode_track(path):
+    result = subprocess.run(['ffmpeg', '-v', 'error', '-i', str(path),
+                             '-ac', '1', '-ar', str(tr.SR), '-f', 'f32le', '-'],
+                            check=True, capture_output=True)
+    samples = np.frombuffer(result.stdout, dtype='<f4')
+    if not len(samples):
+        raise ValueError('Empty audio track')
+    return samples
+
+
+def rms_db(samples, start, end):
+    first, last = max(0, int(start * tr.SR)), max(0, int(end * tr.SR))
+    # Samples beyond the shorter track are silence in the longest-duration mix.
+    clip = samples[first:last].astype(np.float64)
+    power = np.sum(clip * clip) / max(1, last - first)
+    return 10 * math.log10(power) if power > 0 else -math.inf
+
+
+def source_for(mic, system, start, end):
+    mic_db, sys_db = rms_db(mic, start, end), rms_db(system, start, end)
+    if mic_db == sys_db == -math.inf:
+        return None  # No signal on either track; finalize uses a labelled neighbour.
+    return 'sys' if sys_db >= SYS_ACTIVE_DBFS and mic_db < sys_db + MIC_MARGIN_DB else 'mic'
+
+
+def prepare_audio(path, enabled, log):
+    """Validate system capture before committing a mix; failures retain mic audio."""
+    if not enabled:
+        return path, None
+    system = path.with_suffix('.sys.m4a')
+    try:
+        samples = decode_track(system)
+    except Exception as exc:
+        print(f'Mic-only segment {path.name}: missing/unreadable {system.name}: {exc}',
+              file=log, flush=True)
+        return path, None
+    mix = path.with_suffix('.mix.m4a')
+    if not mix.exists():
+        tmp = path.with_suffix('.mix.tmp.m4a')
+        try:
+            subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', str(path), '-i', str(system),
+                            '-filter_complex', 'amix=inputs=2:duration=longest:normalize=0',
+                            '-ac', '1', '-ar', '48000', '-c:a', 'aac', str(tmp)],
+                           check=True, capture_output=True)
+            os.replace(tmp, mix)
+        finally:
+            tmp.unlink(missing_ok=True)
+    return mix, samples
+
+
 HINDI_WORDS = set("""hai hain ho hoon hu ka ke ki mein me toh to nahi nahin kya se ko
 par pe aur ye yeh wo woh kar karna karke raha rahi rahe tha thi the bhi hi jo jab
 kuch koi mera meri mere aap tum hum main mai kaise kyun kyunki lekin agar matlab""".split())
@@ -202,9 +262,11 @@ def event(kind, **fields):
 def scan(session, log, emit_events=False, strict=False):
     """Commit embeddings before JSON (the completion marker); regenerate live text."""
     readable, live, offset = [], [], 0.
+    enabled = system_enabled(session)
     for path in discover(session):
         try:
-            length = duration(path)
+            audio, system = prepare_audio(path, enabled, log)
+            length = duration(audio)
         except Exception as exc:
             print(f'Skipping unreadable segment {path.name}: {exc}', file=log, flush=True)
             if emit_events:
@@ -215,10 +277,14 @@ def scan(session, log, emit_events=False, strict=False):
             if not jp.exists() or not npz.exists():
                 # Reuse either completed half after an interrupted pair of writes.
                 if not npz.exists():
-                    vectors = ENGINE.embed_segment(path)
+                    vectors = ENGINE.embed_segment(path.with_suffix('.sys.m4a') if system is not None else path)
                     atomic(npz, lambda f: np.savez(f, **vectors))
                 if not jp.exists():
-                    rows = ENGINE.transcribe_segment(path)
+                    rows = ENGINE.transcribe_segment(audio)
+                    if system is not None:
+                        mic = decode_track(path)
+                        rows = [dict(r, source=source_for(mic, system, r['start'], r['end']))
+                                for r in rows]
                     text_write(jp, json.dumps(rows, ensure_ascii=False, allow_nan=False))
                     if emit_events:
                         event('segment', index=int(path.stem[4:]),
@@ -226,7 +292,7 @@ def scan(session, log, emit_events=False, strict=False):
             rows = json.loads(jp.read_text(encoding='utf-8'))
             with np.load(npz, allow_pickle=False) as data:
                 vectors = {key: data[key] for key in data.files}
-            readable.append((path, offset, length, rows, vectors))
+            readable.append((audio, offset, length, rows, vectors))
             for row in rows:
                 start = offset + row['start']
                 live.append(f"[{int(start // 60)}:{int(start % 60):02d}] {row['hinglish']}")
@@ -292,6 +358,26 @@ def assign_speakers(windows, labels, rows):
     return [(a, b, first.setdefault(s, len(first)+1), h, e) for a, b, s, h, e in result]
 
 
+def assign_call_speakers(windows, labels, rows):
+    remote = iter(assign_speakers(windows, labels,
+                                 [r for r in rows if r.get('source', 'mic') == 'sys']))
+    pieces = []
+    for row in rows:
+        source = row.get('source', 'mic')
+        if source == 'sys':
+            a, b, speaker, hing, eng = next(remote)
+            pieces.append((a, b, speaker + 1, hing, eng))
+        else:
+            pieces.append((row['start'], row['end'], 1 if source == 'mic' else None,
+                           row['hinglish'], row['english']))
+    labelled = [p for p in pieces if p[2] is not None]
+    for i, (a, b, speaker, hing, eng) in enumerate(pieces):
+        if speaker is None:
+            nearest = min(labelled, key=lambda p: max(p[0]-b, a-p[1], 0)) if labelled else None
+            pieces[i] = (a, b, nearest[2] if nearest else 1, hing, eng)
+    return pieces
+
+
 def finalize(session, work, log, wait_seconds=600):
     session, work = Path(session), Path(work)
     deadline = time.monotonic() + wait_seconds
@@ -305,9 +391,12 @@ def finalize(session, work, log, wait_seconds=600):
         segments = scan(session, log, strict=True)
     if not segments:
         raise ValueError('No readable, successfully processed segments in live session')
+    dual = any(p.name.endswith('.mix.m4a') for p, *_ in segments)
     all_windows, matrices, rows = [], [[], []], []
     for path, offset, length, transcript, data in segments:
         w = np.asarray(data['windows']).reshape(-1, 2)
+        if dual and not path.name.endswith('.mix.m4a'):
+            w = w[:0]
         all_windows.extend(w + offset)
         for i in range(2):
             if len(w):
@@ -321,7 +410,10 @@ def finalize(session, work, log, wait_seconds=600):
         labels, _ = tr.spectral_cluster(sim)
         if len(set(labels)) == 1 or tr.separation(sim, labels) < tr.SINGLE_SPEAKER_SEPARATION:
             labels[:] = 0
-    pieces = assign_speakers(windows, labels, rows)
+    if dual:
+        pieces = assign_call_speakers(windows, labels, rows)
+    else:
+        pieces = assign_speakers(windows, labels, rows)
     audio = session / 'recording.m4a'
     # ffconcat quoting follows ffmpeg's token syntax, including apostrophes in paths.
     listing = session / 'concat.txt'
@@ -340,8 +432,10 @@ def finalize(session, work, log, wait_seconds=600):
             f'[{int(a // 60)}:{a % 60:04.1f}] Speaker {s}: {piece[column]}'
             for piece in pieces for a, b, s, h, e in [piece] if piece[column]))
     glossary = tr.DEFAULT_GLOSSARY.read_text(encoding='utf-8').strip() if tr.DEFAULT_GLOSSARY.exists() else '(none provided)'
-    text_write(work / 'recording.for-llm.md',
-               tr.bundle_text([(a, s, h, e) for a, b, s, h, e in pieces], glossary))
+    bundle = tr.bundle_text([(a, s, h, e) for a, b, s, h, e in pieces], glossary)
+    if dual:
+        bundle = bundle.replace('## Segments\n\n', '## Speakers\n\n' + SYSTEM_NOTE + '\n\n## Segments\n\n', 1)
+    text_write(work / 'recording.for-llm.md', bundle)
     text_write(work / 'pieces.json', json.dumps([(a, b, s) for a, b, s, h, e in pieces]))
     return audio, len({p[2] for p in pieces})
 

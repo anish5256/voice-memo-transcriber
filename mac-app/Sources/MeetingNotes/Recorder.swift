@@ -9,13 +9,53 @@ private final class CaptureWriter: NSObject, AVCaptureFileOutputRecordingDelegat
     private let output = AVCaptureAudioFileOutput()
     private let condition = NSCondition()
     private var unfinished = Set<URL>()
+    private var completions: [URL: SegmentCompletion] = [:]
+    private var systemAudio: SystemAudioCapture?
+    var notice: (@Sendable (String) -> Void)?
+
+    private func startSystemAudio(_ url: URL) -> Bool {
+        let capture = SystemAudioCapture()
+        capture.closed = { [weak self] url in
+            self?.trackClosed(url.deletingPathExtension().deletingPathExtension().appendingPathExtension("m4a"), system: true)
+        }
+        capture.onError = { [weak self] error in
+            let text = error.localizedDescription
+            self?.queue.async { [weak self] in self?.disableSystemAudio(text) }
+        }
+        do { try capture.start(url); systemAudio = capture; return true }
+        catch { notice?("System audio unavailable: \(error.localizedDescription) Continuing microphone-only."); return false }
+    }
+    private func disableSystemAudio(_ issue: String) {
+        let capture = systemAudio; systemAudio = nil
+        capture?.stop()
+        notice?("System audio stopped: \(issue) Continuing microphone-only.")
+    }
+    private func stopSystemAudio() {
+        let capture = systemAudio; systemAudio = nil; capture?.stop()
+    }
+    private func trackClosed(_ url: URL, system: Bool) {
+        condition.lock()
+        guard var state = completions[url] else { condition.unlock(); return }
+        if system { state.systemClosed = true } else { state.microphoneFinished = true }
+        completions[url] = state
+        guard state.canPublish else { condition.unlock(); return }
+        completions.removeValue(forKey: url)
+        var issue: String?
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        if size > 0 {
+            do { try Data().write(to: url.deletingPathExtension().appendingPathExtension("done"), options: .atomic) }
+            catch { issue = "Could not mark completed segment: \(error.localizedDescription)" }
+        } else { issue = "Recording segment is empty or missing: \(url.lastPathComponent)." }
+        unfinished.remove(url); condition.broadcast(); condition.unlock()
+        finished?(url, issue)
+    }
     private var observer: NSObjectProtocol?
     private var disconnectObserver: NSObjectProtocol?
     var finished: (@Sendable (URL, String?) -> Void)?
     var interrupted: (@Sendable () -> Void)?
 
-    func start(device: AVCaptureDevice, url: URL) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+    func start(device: AVCaptureDevice, url: URL, includeSystemAudio: Bool) async throws -> Bool {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Bool, Error>) in
             queue.async {
                 do {
                     let input = try AVCaptureDeviceInput(device: device)
@@ -34,26 +74,38 @@ private final class CaptureWriter: NSObject, AVCaptureFileOutputRecordingDelegat
                         forName: AVCaptureDevice.wasDisconnectedNotification, object: device, queue: nil
                     ) { [weak self] _ in self?.interrupted?() }
                     self.session.startRunning()
+                    // Start the mic first so Core Audio has a process object for our PID.
+                    let systemStarted = includeSystemAudio && self.startSystemAudio(
+                        url.deletingPathExtension().appendingPathExtension("sys.m4a"))
                     self.begin(url)
-                    continuation.resume()
+                    continuation.resume(returning: systemStarted)
                 } catch { continuation.resume(throwing: error) }
             }
         }
     }
     private func begin(_ url: URL) {
-        condition.lock(); unfinished.insert(url); condition.unlock()
+        condition.lock()
+        unfinished.insert(url)
+        completions[url] = SegmentCompletion(systemRunning: systemAudio != nil)
+        condition.unlock()
         output.startRecording(to: url, outputFileType: .m4a, recordingDelegate: self)
     }
-    func rotate(_ url: URL) { queue.async { self.begin(url) } }
-    func pause() { queue.async { self.output.pauseRecording() } }
-    func resume() { queue.async { self.output.resumeRecording() } }
-    func stop() { queue.async { self.output.stopRecording() } }
+    func rotate(_ url: URL) { queue.async {
+        if let system = self.systemAudio {
+            do { try system.rotate(to: url.deletingPathExtension().appendingPathExtension("sys.m4a")) }
+            catch { self.disableSystemAudio(error.localizedDescription) }
+        }
+        self.begin(url)
+    } }
+    func pause() { queue.async { self.output.pauseRecording(); self.systemAudio?.pause() } }
+    func resume() { queue.async { self.systemAudio?.resume(); self.output.resumeRecording() } }
+    func stop() { queue.async { self.stopSystemAudio(); self.output.stopRecording() } }
     // Used only when AppKit is already terminating. Delegate callbacks write markers
     // directly, so this bounded wait does not depend on servicing the main actor.
     func finishForTermination(timeout: TimeInterval) {
         let deadline = Date().addingTimeInterval(timeout)
         let requested = DispatchSemaphore(value: 0)
-        queue.async { self.output.stopRecording(); requested.signal() }
+        queue.async { self.stopSystemAudio(); self.output.stopRecording(); requested.signal() }
         guard requested.wait(timeout: .now() + timeout) == .success else { return }
         condition.lock()
         while !unfinished.isEmpty && Date() < deadline {
@@ -62,6 +114,8 @@ private final class CaptureWriter: NSObject, AVCaptureFileOutputRecordingDelegat
         condition.unlock()
     }
     func shutdown() { queue.async {
+        self.stopSystemAudio()
+        self.output.stopRecording()
         if let observer = self.observer { NotificationCenter.default.removeObserver(observer) }
         self.observer = nil
         if let observer = self.disconnectObserver { NotificationCenter.default.removeObserver(observer) }
@@ -78,18 +132,7 @@ private final class CaptureWriter: NSObject, AVCaptureFileOutputRecordingDelegat
     }
     func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo url: URL,
                     from connections: [AVCaptureConnection], error: Error?) {
-        // This is the only place that creates completion markers, including error salvage.
-        var issue: String?
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        if size > 0 {
-            do { try Data().write(to: url.deletingPathExtension().appendingPathExtension("done"), options: .atomic) }
-            catch { issue = "Could not mark completed segment: \(error.localizedDescription)" }
-        } else {
-            issue = "Recording segment is empty or missing: \(url.lastPathComponent). \(error?.localizedDescription ?? "")"
-        }
-        if let issue { NSLog("%@", issue) }
-        condition.lock(); unfinished.remove(url); condition.broadcast(); condition.unlock()
-        finished?(url, issue)
+        trackClosed(url, system: false)
         // AVFoundation can report an "error" whose userInfo says the file finished fine
         // (e.g. on a file switch); only a real failure should stop the whole recording.
         if let error = error as NSError?,
@@ -122,7 +165,7 @@ final class Recorder: ObservableObject {
     private var lastTick = Date()
     private var completion: ((URL, JobSettings) -> Void)?
 
-    func start(settings: JobSettings, microphoneID: String,
+    func start(settings: JobSettings, microphoneID: String, includeSystemAudio: Bool = false,
                completion: @escaping (URL, JobSettings) -> Void) async {
         guard machine.apply(.start) else { return }
         guard await AVCaptureDevice.requestAccess(for: .audio) else {
@@ -151,9 +194,6 @@ final class Recorder: ObservableObject {
             }
             try FileManager.default.createDirectory(at: folder.appendingPathComponent("segments"), withIntermediateDirectories: true)
             created = folder
-            let metadata: [String: Any] = ["started_at": ISO8601DateFormatter.local.string(from: Date()),
-                "input_device_name": device.localizedName, "segment_seconds": 30]
-            try JSONSerialization.data(withJSONObject: metadata).write(to: folder.appendingPathComponent("session.json"), options: .atomic)
             let callbackSession = folder
             let capture = CaptureWriter()
             capture.finished = { [weak self] url, issue in
@@ -174,6 +214,12 @@ final class Recorder: ObservableObject {
                     await self.stop()
                 }
             }
+            capture.notice = { [weak self] text in
+                Task { @MainActor in
+                    guard let self, self.sessionURL == callbackSession else { return }
+                    self.message = text
+                }
+            }
             writer = capture
             sessionURL = folder
             self.settings = settings
@@ -181,7 +227,13 @@ final class Recorder: ObservableObject {
             index = 1
             let first = segmentURL()
             pending = [first]
-            try await capture.start(device: device, url: first)
+            let startedAt = Date()
+            let systemStarted = try await capture.start(
+                device: device, url: first, includeSystemAudio: includeSystemAudio)
+            let metadata: [String: Any] = ["started_at": ISO8601DateFormatter.local.string(from: startedAt),
+                "input_device_name": device.localizedName, "segment_seconds": 30, "system_audio": systemStarted]
+            try JSONSerialization.data(withJSONObject: metadata).write(
+                to: folder.appendingPathComponent("session.json"), options: .atomic)
             machine.apply(.ready)
             elapsed = 0; segmentElapsed = 0; transcript = ""; lastTick = Date()
             let currentSession = folder

@@ -25,7 +25,6 @@ from pathlib import Path
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tools import ffmpeg
-from romanize import romanize
 
 import numpy as np
 from scipy.cluster.vq import kmeans2
@@ -233,53 +232,29 @@ def filtered_result(result, prompt=None):
     return dict(result, segments=kept, text=' '.join(s['text'].strip() for s in kept))
 
 
-def _decode(clip, kw, temperature, romanized=False, echo_of=None):
-    """One guarded decode: hotter retries for loops, then the silence / prompt-echo filter."""
-    import mlx_whisper
-    base = dict(verbose=None, condition_on_previous_text=False,
-                compression_ratio_threshold=2.4, logprob_threshold=-1.0)
-    temperatures = ((0.0, 0.2, 0.4, 0.6), (0.4,), (0.8,)) if temperature is None else (temperature,)
-    for temp in temperatures:  # retry looped decodes hotter
-        result = mlx_whisper.transcribe(clip, path_or_hf_repo=WHISPER, temperature=temp, **base, **kw)
-        if romanized:
-            result = dict(result, text=romanize(result["text"]),
-                          segments=[dict(s, text=romanize(s["text"])) for s in result.get("segments", [])])
-        if not loopy(result["text"].strip()):
-            return filtered_result(result, echo_of or kw.get('initial_prompt'))
-    return None
-
-
-SPARSE_WORDS_PER_SECOND = 0.5   # a real utterance is 2-3 words/s; below this Whisper stopped early
-SPARSE_MIN_SECONDS = 8.0
+RETRY_TEMPERATURES = ((0.0, 0.2, 0.4, 0.6), (0.4,), (0.8,))
 
 
 def transcribe_result(clip, mode, prompt, *, temperature=None):
-    """Decode with the shared settings and loop guard, retaining Whisper timestamps.
-
-    Hinglish is decoded in Roman script, steered by a prompt (this keeps English terms such as
-    "save and draft" readable). On unclear audio that decode can return only an echo of the prompt
-    (filtered to nothing), a loop, or one short sentence for a long clip. In those cases the same
-    clip is decoded once more as plain Hindi without a prompt and romanized; the fuller result wins.
-    """
+    """Decode with the shared settings and loop guard, retaining Whisper timestamps."""
     # File paths make mlx_whisper invoke a PATH binary; only decoded arrays are allowed.
     if not isinstance(clip, np.ndarray):
         raise TypeError("Whisper audio must be a numpy array")
-    if mode == "en":
-        result = _decode(clip, dict(language="hi", task="translate"), temperature)
+    import mlx_whisper
+    base = dict(verbose=None, condition_on_previous_text=False,
+                compression_ratio_threshold=2.4, logprob_threshold=-1.0)
+    kw = (dict(language="hi", task="translate") if mode == "en"
+          else dict(language="en", task="transcribe", initial_prompt=prompt or DEFAULT_HINGLISH_PROMPT))
+    temperatures = RETRY_TEMPERATURES if temperature is None else (temperature,)
+    for temp in temperatures:  # retry looped decodes hotter
+        result = mlx_whisper.transcribe(clip, path_or_hf_repo=WHISPER, temperature=temp, **base, **kw)
+        t = result["text"].strip()
+        if not loopy(t):
+            break
     else:
-        prompt = prompt or DEFAULT_HINGLISH_PROMPT
-        result = _decode(clip, dict(language="en", task="transcribe", initial_prompt=prompt), temperature)
-        seconds = len(clip) / SR
-        count = lambda r: len(r["text"].split()) if r else 0
-        if temperature is None and (count(result) == 0 or (
-                seconds >= SPARSE_MIN_SECONDS and count(result) < SPARSE_WORDS_PER_SECOND * seconds)):
-            fallback = _decode(clip, dict(language="hi", task="transcribe"), None, romanized=True, echo_of=prompt)
-            if count(fallback) > count(result):
-                result = fallback
-    if result is None:
         t = "[unclear - overlapping speech]"
         return dict(text=t, segments=[dict(start=0, end=len(clip) / SR, text=t)])
-    return result
+    return filtered_result(result, kw.get('initial_prompt'))
 
 
 def transcribe_piece(clip, mode, prompt):

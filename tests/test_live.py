@@ -255,11 +255,9 @@ class LiveTests(unittest.TestCase):
         decoder = Mock(return_value=dict(text='go go go go go go go go', segments=[]))
         with patch.dict('sys.modules', {'mlx_whisper': SimpleNamespace(transcribe=decoder)}):
             result = live.tr.transcribe_result(np.zeros(32000), 'hing', None)
-        # three hotter retries of the Roman decode, then the same for the Hindi fallback
-        self.assertEqual(decoder.call_count, 6)
+        self.assertEqual(decoder.call_count, 3)
         self.assertEqual([c.kwargs['temperature'] for c in decoder.call_args_list],
-                         [(0., .2, .4, .6), (.4,), (.8,)] * 2)
-        self.assertEqual([c.kwargs['language'] for c in decoder.call_args_list], ['en'] * 3 + ['hi'] * 3)
+                         [(0., .2, .4, .6), (.4,), (.8,)])
         self.assertIn('unclear', result['segments'][0]['text'])
 
     def test_live_filters_echo_and_silence_before_rows(self):

@@ -214,6 +214,7 @@ class CleanupWorker:
         self.pending, self.ready, self.seen = [], {}, set()
         self.stats = dict.fromkeys(('segments', 'lines_total', 'lines_sent', 'calls',
                                    'chars_sent', 'chars_received', 'approx_tokens'), 0)
+        self.stats['model_notices'] = []
         stats_path = self.session / 'cleanup_stats.json'
         if stats_path.exists():
             self.stats.update(json.loads(stats_path.read_text()))
@@ -240,16 +241,22 @@ class CleanupWorker:
         self.pending.append((path, lines, flagged, time.monotonic() + CLEANUP_TIMEOUT))
         self.save_stats()
         def call():
+            notices = []
             try:
                 import summarize
                 # Isolate codex's output file and late calls from session deletion.
                 with tempfile.TemporaryDirectory(prefix='live-cleanup-') as tmp:
                     with open(Path(tmp) / 'call.log', 'a') as call_log:
-                        reply = summarize.ask_llm(self.config['provider'], self.config.get('model', ''),
-                                                  prompt, Path(tmp), call_log, '', timeout=CLEANUP_TIMEOUT)
-                self.results.put((path, reply, None, time.monotonic()))
+                        token = summarize.MODEL_NOTICE_HANDLER.set(
+                            lambda item: notices.append(dict(item, step='live_cleanup')))
+                        try:
+                            reply = summarize.ask_llm(self.config['provider'], self.config.get('model', ''),
+                                                      prompt, Path(tmp), call_log, '', timeout=CLEANUP_TIMEOUT)
+                        finally:
+                            summarize.MODEL_NOTICE_HANDLER.reset(token)
+                self.results.put((path, reply, None, time.monotonic(), notices))
             except Exception as exc:
-                self.results.put((path, '', exc, time.monotonic()))
+                self.results.put((path, '', exc, time.monotonic(), notices))
         threading.Thread(target=call, daemon=True).start()
 
     def save_stats(self):
@@ -259,8 +266,13 @@ class CleanupWorker:
     def drain(self, expire=False):
         while True:
             try:
-                path, reply, error, finished = self.results.get_nowait()
+                result = self.results.get_nowait()
+                path, reply, error, finished = result[:4]
+                notices = result[4] if len(result) > 4 else []
                 if any(job[0] == path for job in self.pending):
+                    self.stats['model_notices'].extend(notices)
+                    for item in notices:
+                        event('model_notice', **item)
                     self.ready[path] = (reply, error, finished)
             except queue.Empty:
                 break

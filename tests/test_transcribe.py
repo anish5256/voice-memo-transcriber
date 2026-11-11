@@ -48,35 +48,6 @@ class DecodeTests(unittest.TestCase):
         self.assertEqual(self.decode([default_echo], prompt=custom)['segments'], [default_echo])
 
 
-    def fallback(self, primary, hindi, seconds=10):
-        calls = []
-        def decoder(clip, **kw):
-            calls.append(kw)
-            text = hindi if kw['language'] == 'hi' else primary
-            return dict(text=text, segments=[dict(start=0, end=seconds, text=text)] if text else [])
-        with patch.dict('sys.modules', {'mlx_whisper': SimpleNamespace(transcribe=decoder)}):
-            got = tr.transcribe_result(np.zeros(int(seconds * tr.SR)), 'hing', None)
-        return got['text'].strip(), calls
-
-    def test_hindi_fallback_when_roman_decode_is_empty_or_sparse(self):
-        hindi = 'यह invoice कल accounts team को भेज दो'
-        roman = 'yah invoice kal accounts team ko bhej do'
-        # prompt echo only -> filtered to nothing -> Hindi decode, romanized, no prompt
-        text, calls = self.fallback('Aapka chalo phir baad mein baat karte hain.', hindi)
-        self.assertEqual(text, roman)
-        self.assertEqual(calls[-1]['language'], 'hi')
-        self.assertNotIn('initial_prompt', calls[-1])
-        # one short sentence for a 10 s clip -> the fuller Hindi decode wins
-        self.assertEqual(self.fallback('Theek hai.', hindi)[0], roman)
-        # a normal decode is kept and costs no second pass
-        full = 'Theek hai, invoice aaj accounts team ko bhej dena.'
-        text, calls = self.fallback(full, hindi)
-        self.assertEqual((text, len(calls)), (full, 1))
-        # short clips are never treated as sparse; a worse fallback never replaces the original
-        self.assertEqual(self.fallback('Haan.', hindi, seconds=3)[0], 'Haan.')
-        self.assertEqual(self.fallback('Theek hai.', '')[0], 'Theek hai.')
-        self.assertEqual(self.fallback('Theek hai.', 'लुट ' * 30)[0], 'Theek hai.')
-
     def test_file_paths_rejected(self):
         with self.assertRaisesRegex(TypeError, 'numpy array'):
             tr.transcribe_result('recording.wav', 'en', None)

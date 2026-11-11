@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Transcribe, summarize and organize an audio recording into a meeting folder."""
 import argparse
+from contextvars import ContextVar
 from datetime import datetime
 import json
 import os
@@ -16,7 +17,7 @@ import urllib.request
 # Isolated (-I) launches omit the script directory.
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-from tools import audio_duration, ensure_speech_model, MODEL_MESSAGE, python_command
+from tools import resolve_model, cheap_model, audio_duration, ensure_speech_model, MODEL_MESSAGE, python_command
 
 # Same segment layout as clean.py; kept local for the isolated (-I) CLI.
 SEG = re.compile(r"^\[(\d+:\d+\.\d)\] Speaker (\d+)\n  Hinglish: (.*)\n  English:  (.*)$", re.M)
@@ -139,13 +140,13 @@ def run(command, work, log, **kwargs):
 
 
 def claude_command(model):
+    model = resolve_model('claude', model)
     return ['claude', '-p', '--setting-sources', 'local', '--tools', '',
             '--strict-mcp-config', '--no-session-persistence', '--model', model,
             '--output-format', 'text']
 
 
-def ask_llm(provider, model, prompt, work, log, proxy_url, *, timeout=1200):
-    model = default_model(provider, model)
+def _ask_llm(provider, model, prompt, work, log, proxy_url, *, timeout=1200):
     output = work / 'summary.md'
     if provider == 'codex':
         command = ['codex', 'exec', '--ignore-user-config', '--skip-git-repo-check',
@@ -174,6 +175,8 @@ def ask_llm(provider, model, prompt, work, log, proxy_url, *, timeout=1200):
             )
         except anthropic.AuthenticationError:
             raise ValueError('Anthropic API key is invalid') from None
+        except getattr(anthropic, 'NotFoundError', ()):
+            raise
         except anthropic.APIStatusError:
             raise ValueError('Anthropic API request failed') from None
         except anthropic.APIConnectionError:
@@ -202,8 +205,54 @@ def ask_llm(provider, model, prompt, work, log, proxy_url, *, timeout=1200):
 
 
 def default_model(provider, model):
-    return model or ({'claude': 'claude-opus-5-5', 'anthropic': 'claude-opus-5-5',
-                      'proxy': 'gpt-5'}.get(provider, ''))
+    return resolve_model(provider, model)
+
+
+MODEL_NOTICE_HANDLER = ContextVar("model_notice_handler", default=None)
+
+
+def ask_llm(provider, model, prompt, work, log, proxy_url, *, timeout=1200,
+            notice=None, step=None):
+    notice = notice or MODEL_NOTICE_HANDLER.get()
+    requested = model
+    explicit = bool(model) and not model.startswith('tier:')
+    resolved = resolve_model(provider, model)
+    offset = log.tell()
+    try:
+        return _ask_llm(provider, resolved, prompt, work, log, proxy_url, timeout=timeout)
+    except Exception as error:
+        model_error = False
+        if provider in ('claude', 'codex') and isinstance(error, subprocess.CalledProcessError):
+            log.flush()
+            try:
+                with open(log.name, encoding='utf-8', errors='replace') as reader:
+                    reader.seek(offset)
+                    detail = reader.read()
+            except (AttributeError, OSError, TypeError):
+                detail = log.getvalue()[offset:] if hasattr(log, 'getvalue') else ''
+            detail += str(error.output or '') + str(error.stderr or '')
+            if provider == 'claude':
+                model_error = bool(re.search(r'unrecognized_model|doesn.t recognize the model|not_found_error|model[^\n]*(?:not found|does not exist|unavailable|retired)', detail, re.I))
+            else:
+                model_error = bool(re.search(r'Model metadata[^\n]*not found|model_not_found|does not exist', detail, re.I))
+        elif provider == 'anthropic':
+            import anthropic
+            model_error = isinstance(error, getattr(anthropic, 'NotFoundError', ()))
+        if not explicit or not model_error:
+            raise
+    used = resolve_model(provider, 'tier:cheap' if cheap_model(requested) else 'tier:default')
+    result = _ask_llm(provider, used, prompt, work, log, proxy_url, timeout=timeout)
+    item = dict(requested=requested, used=used or 'default', provider=provider,
+                step=step or ('correction' if prompt.startswith(CORRECTION_PROMPT) else 'summary'))
+    if notice is not None:
+        notice(item)
+    else:
+        path = work / 'model_notices.json'
+        notices = json.loads(path.read_text()) if path.exists() else []
+        notices.append(item)
+        path.write_text(json.dumps(notices), encoding='utf-8')
+        emit('notice', message=f"{requested} is no longer available; used {item['used']} instead.")
+    return result
 
 
 def summarize(args, work, prompt, recorded, log):
@@ -290,6 +339,8 @@ def organize(audio, work, meetings, recorded, summary, speakers, backend, model,
                     summary_backend=backend, summary_model=model, correct_backend=correct_backend,
                     correct_model=correct_model, correction=correction or dict(accepted=0, rejected=0, missing=0),
                     created_at=datetime.now().astimezone().isoformat())
+        notices_path = work / 'model_notices.json'
+        meta['model_notices'] = json.loads(notices_path.read_text()) if notices_path.exists() else []
         if event is not None:
             meta['event'] = event
         if live_cleanup is not None:
@@ -329,8 +380,8 @@ def main():
     session = args.live_session.expanduser().resolve() if args.live_session else None
     provider = args.summary_backend
     legacy = args.codex_model if provider == 'codex' else (args.claude_model if provider in ('claude', 'anthropic') else args.proxy_model if provider == 'proxy' else '')
-    model = default_model(provider, args.summary_model or legacy)
-    correct_model = default_model(args.correct_backend, args.correct_model)
+    model = args.summary_model or legacy
+    correct_model = args.correct_model
     meetings = args.meetings_dir.expanduser().resolve()
     work = meetings / '_work' / (datetime.now().strftime('%Y%m%d-%H%M%S-%f') + '-' +
                                 (sanitize_title((session or args.audio).stem) or 'audio'))

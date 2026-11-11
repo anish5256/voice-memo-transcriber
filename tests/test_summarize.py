@@ -99,8 +99,9 @@ class SummarizeTests(unittest.TestCase):
                                                'messages': [{'role': 'user', 'content': 'prompt'}]})
         self.assertEqual(req.get_header('Authorization'), 'Bearer test')
         self.assertEqual(request.call_args.kwargs, {'timeout': 1200})
-        for provider in ('claude', 'anthropic'):
-            self.assertEqual(summarize.default_model(provider, ''), 'claude-opus-5-5')
+        self.assertEqual(summarize.default_model('claude', ''), 'opus')
+        with patch('tools.anthropic_tier_model', return_value='claude-opus-5-5'):
+            self.assertEqual(summarize.default_model('anthropic', ''), 'claude-opus-5-5')
 
     @staticmethod
     def bundle(texts):

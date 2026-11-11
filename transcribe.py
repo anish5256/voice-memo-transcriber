@@ -25,6 +25,7 @@ from pathlib import Path
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tools import ffmpeg
+from romanize import romanize
 
 import numpy as np
 from scipy.cluster.vq import kmeans2
@@ -240,11 +241,17 @@ def transcribe_result(clip, mode, prompt, *, temperature=None):
     import mlx_whisper
     base = dict(verbose=None, condition_on_previous_text=False,
                 compression_ratio_threshold=2.4, logprob_threshold=-1.0)
+    # Hinglish = Hindi decode (Devanagari, converted to Roman below). A Roman-Hinglish prompt used to be
+    # echoed into unclear audio (and the echo filter then dropped real speech next to it), so the default is
+    # no prompt; a user-supplied prompt is still honoured.
     kw = (dict(language="hi", task="translate") if mode == "en"
-          else dict(language="en", task="transcribe", initial_prompt=prompt or DEFAULT_HINGLISH_PROMPT))
+          else dict(language="hi", task="transcribe", **(dict(initial_prompt=prompt) if prompt else {})))
     temperatures = ((0.0, 0.2, 0.4, 0.6), (0.4,), (0.8,)) if temperature is None else (temperature,)
     for temp in temperatures:  # retry looped decodes hotter
         result = mlx_whisper.transcribe(clip, path_or_hf_repo=WHISPER, temperature=temp, **base, **kw)
+        if mode != "en":
+            result = dict(result, text=romanize(result["text"]),
+                          segments=[dict(s, text=romanize(s["text"])) for s in result.get("segments", [])])
         t = result["text"].strip()
         if not loopy(t):
             break

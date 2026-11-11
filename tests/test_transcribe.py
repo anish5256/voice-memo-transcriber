@@ -19,10 +19,10 @@ class DecodeTests(unittest.TestCase):
     def test_echo_and_real_speech(self):
         echo = dict(start=0, end=.3, text='Aapka CHALO, phir baad mein baat karte hain.')
         real = dict(start=.3, end=1, text='Theek hai, invoice aaj accounts team ko bhej dena.')
-        got = self.decode([echo, real])
+        got = self.decode([echo, real], prompt=tr.DEFAULT_HINGLISH_PROMPT)
         self.assertEqual(got['segments'], [real])
         self.assertEqual(got['text'], real['text'])
-        self.assertEqual(self.decode([echo])['text'], '')
+        self.assertEqual(self.decode([echo], prompt=tr.DEFAULT_HINGLISH_PROMPT)['text'], '')
         self.assertEqual(self.decode([real])['text'], real['text'])
         short = dict(start=0, end=1, text='theek hai')
         self.assertEqual(self.decode([short])['segments'], [short])
@@ -47,6 +47,12 @@ class DecodeTests(unittest.TestCase):
         default_echo = dict(start=0, end=1, text='chalo phir baad mein')
         self.assertEqual(self.decode([default_echo], prompt=custom)['segments'], [default_echo])
 
+
+    def test_hindi_decode_is_romanized_without_default_prompt(self):
+        seg = dict(start=0, end=1, text='यह invoice कल भेज दो')
+        got = self.decode([seg])
+        self.assertEqual(got['text'], 'yah invoice kal bhej do')
+        decoder_kw = {}
 
     def test_file_paths_rejected(self):
         with self.assertRaisesRegex(TypeError, 'numpy array'):

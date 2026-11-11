@@ -249,7 +249,7 @@ class LiveTests(unittest.TestCase):
                 'sys.modules', {'mlx_whisper': SimpleNamespace(transcribe=decode)}):
             rows = engine.transcribe_segment(Path('unused'))
         self.assertEqual(rows, [dict(start=.2, end=.8, hinglish='haan', english='one two')])
-        self.assertEqual((calls[0]['language'], calls[0]['initial_prompt']), ('en', 'custom'))
+        self.assertEqual((calls[0]['language'], calls[0]['initial_prompt']), ('hi', 'custom'))
         self.assertEqual((calls[1]['language'], calls[1]['task']), ('hi', 'translate'))
         from unittest.mock import Mock
         decoder = Mock(return_value=dict(text='go go go go go go go go', segments=[]))
@@ -262,7 +262,7 @@ class LiveTests(unittest.TestCase):
 
     def test_live_filters_echo_and_silence_before_rows(self):
         from types import SimpleNamespace
-        engine = live.Engine()
+        engine = live.Engine(prompt=live.tr.DEFAULT_HINGLISH_PROMPT)
         real = dict(start=.5, end=1, text='theek hai')
         def decode(clip, **kw):
             if kw['task'] == 'translate':

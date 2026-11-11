@@ -26,10 +26,12 @@ struct MeetingNotesApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        // One main window (like Voice Memos); Window ▸ MeetingNotes and the Dock icon reopen it.
+        Window("MeetingNotes", id: "main") {
             ContentView(queue: queue, recorder: recorder, account: account, claudeAccount: claudeAccount)
                 .frame(minWidth: 820, minHeight: 520)
                 .onAppear { delegate.recorder = recorder }
+                .background(ReopenBridge { delegate.openMain = $0 })
         }
         // No title in the toolbar (like Voice Memos): AppKit re-positions toolbar titles without
         // animating them, so it jumped to the right while the sidebar expanded.
@@ -53,7 +55,13 @@ struct MeetingNotesApp: App {
 @MainActor
 final class MeetingAppDelegate: NSObject, NSApplicationDelegate {
     weak var recorder: Recorder?
+    var openMain: (() -> Void)?
     private var terminating = false
+    // Without this, closing the window left a running app that never showed a window again.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { openMain?() }
+        return true
+    }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let recorder, recorder.isBusy else { return .terminateNow }
         guard !terminating else { return .terminateLater }
@@ -72,5 +80,17 @@ final class MeetingAppDelegate: NSObject, NSApplicationDelegate {
         // Normal termination has already drained the capture through the deferred reply.
         // A forced process kill leaves its session for launch recovery.
         recorder?.finishForTermination()
+    }
+}
+
+// Hands SwiftUI's openWindow action to the app delegate so a Dock click can reopen the window.
+private struct ReopenBridge: View {
+    @Environment(\.openWindow) private var openWindow
+    let register: (@escaping () -> Void) -> Void
+    var body: some View {
+        Color.clear.frame(width: 0, height: 0).onAppear {
+            let open = openWindow
+            register { open(id: "main") }
+        }
     }
 }

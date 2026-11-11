@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 WHISPER = 'mlx-community/whisper-large-v3-mlx'
 MODEL_MESSAGE = 'Downloading the speech model (about 3 GB, one time)…'
@@ -63,3 +64,13 @@ def ensure_speech_model(before_download):
         snapshot_download(WHISPER)
     except Exception as exc:
         raise ValueError('Could not download the speech model. Check your internet connection.') from exc
+
+
+def python_command():
+    """This interpreter for child scripts, with the same isolation and bytecode-cache location.
+    Children started with -I ignore PYTHON* env vars, so the app's -X pycache_prefix must be passed on,
+    otherwise they write __pycache__ into the (signed, read-only) app bundle."""
+    command = [sys.executable, '-I']
+    if sys.pycache_prefix:
+        command += ['-X', f'pycache_prefix={sys.pycache_prefix}']
+    return command

@@ -118,3 +118,11 @@ class ToolTests(unittest.TestCase):
                                      ([] if cached else ['downloading_model']) +
                                      ['finalizing' if live else 'transcribing', 'error'])
                     self.assertEqual(events[-1]['message'], 'inference reached')
+
+
+class PythonCommandTests(unittest.TestCase):
+    def test_passes_pycache_prefix_to_children(self):
+        with patch.object(tools.sys, 'pycache_prefix', '/tmp/cache'):
+            self.assertEqual(tools.python_command()[1:], ['-I', '-X', 'pycache_prefix=/tmp/cache'])
+        with patch.object(tools.sys, 'pycache_prefix', None):
+            self.assertEqual(tools.python_command()[1:], ['-I'])

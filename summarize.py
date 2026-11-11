@@ -16,7 +16,7 @@ import urllib.request
 # Isolated (-I) launches omit the script directory.
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-from tools import audio_duration, ensure_speech_model, MODEL_MESSAGE
+from tools import audio_duration, ensure_speech_model, MODEL_MESSAGE, python_command
 
 # Same segment layout as clean.py; kept local for the isolated (-I) CLI.
 SEG = re.compile(r"^\[(\d+:\d+\.\d)\] Speaker (\d+)\n  Hinglish: (.*)\n  English:  (.*)$", re.M)
@@ -351,7 +351,7 @@ def main():
                 audio, speakers = live_transcribe.finalize(session, work, log)
             else:
                 emit('transcribing')
-                run([sys.executable, '-I', str(repo / 'transcribe.py'), str(audio),
+                run([*python_command(), str(repo / 'transcribe.py'), str(audio),
                      '--models-dir', str(repo / 'models'), '--out-dir', str(work)], work, log)
                 matches = re.findall(r'detected (\d+) speakers',
                                      (work / 'pipeline.log').read_text(encoding='utf-8', errors='replace'))
@@ -359,7 +359,7 @@ def main():
                 speakers = int(matches[-1]) if matches else len({
                     piece[2] for piece in json.loads((work / 'pieces.json').read_text())})
             emit('cleaning')
-            run([sys.executable, '-I', str(repo / 'clean.py'),
+            run([*python_command(), str(repo / 'clean.py'),
                  str(work / f'{audio.stem}.for-llm.md')], work, log)
             bundle = (work / f'{audio.stem}.for-llm.names-fixed.md').read_text(encoding='utf-8')
             bundle = event_context(bundle, event)

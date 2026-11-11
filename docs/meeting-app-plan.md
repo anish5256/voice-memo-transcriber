@@ -1,5 +1,8 @@
 # MeetingNotes: tiny macOS app (plan / spec)
 
+> The app (Part B onward, Swift) now lives in https://github.com/anish5256/meetingnotes-mac. This file stays here as the
+> contract between the app and this repo's Python pipeline.
+
 Drop audio files or record from the Mac mic -> local transcription (existing pipeline) -> ChatGPT or Claude
 summary -> one organized folder per meeting. Two parts with a fixed contract so they can be built
 independently.

@@ -133,7 +133,7 @@ Drop audio files or record from the mic; each recording is transcribed locally, 
 and filed as `~/Meetings/YYYY/MM/YYYY-MM-DD HHMM - <Title>/` (audio, `summary.md`, transcripts,
 `meta.json`) with a line in `~/Meetings/INDEX.md`. Spec: `docs/meeting-app-plan.md`.
 
-- Build: `bash mac-app/build_app.sh` -> `mac-app/build/MeetingNotes.app` (copy to `~/Applications`).
+- The app lives in its own repo, [meetingnotes-mac](https://github.com/anish5256/meetingnotes-mac), with a setup guide and a one-command installer. This repo is its transcription engine.
 - Backend CLI (also usable without the app): `venv/bin/python -I summarize.py AUDIO [--backend codex|proxy|fake]`.
 - Summaries: `codex` backend (default) uses your ChatGPT login via `codex exec --ignore-user-config`
   (no MCP/connector tools); `proxy` uses an OpenAI-compatible endpoint such as CLIProxyAPI
@@ -145,7 +145,7 @@ Record in MeetingNotes and the audio is saved in 30 s segments that `live_transc
 while you talk (~18 s of compute per 30 s on an M3 Pro), so after Stop only the last segment, speaker
 clustering, correction and the summary remain. Pick the microphone next to the record button; pause/resume
 any time. Interrupted sessions in `~/Meetings/_live/` are finished automatically on the next launch.
-Tests: `venv/bin/python -m unittest tests/test_live.py tests/test_summarize.py` and `cd mac-app && swift test`.
+Tests: `venv/bin/python -m unittest tests/test_live.py tests/test_summarize.py`.
 
 ### Calendar
 MeetingNotes reads macOS Calendar (add Google under System Settings ▸ Internet Accounts). The "Up next" card records
